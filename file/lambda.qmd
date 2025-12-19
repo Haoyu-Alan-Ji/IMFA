@@ -1,0 +1,50 @@
+---
+title: "factor loading prior"
+author: "Haoyu Ji"
+format: 
+  html:
+    code-tools: true
+    df-print: paged
+    self-contained: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+setwd(here::here())
+```
+
+In each cluster, 
+
+$$
+x_i \;=\; \mu_g \;+\; \Lambda_g \eta_i \;+\; \varepsilon_{ig},\qquad
+\eta_i \sim \mathcal{N}_q(0, I_q),\qquad
+\varepsilon_{ig} \sim \mathcal{N}_p(0, \Psi_g),\qquad
+\Psi_g = \mathrm{Diag}(\psi_{1g}, \ldots, \psi_{pg}).
+$$
+
+prior on $Λ_g^T$ is $\Lambda_g^\top \sim \mathcal{MN}_{p\times q}\!\left(M_{0g}^\top,\ \Psi_g,\ B_{0g}\right).$
+
+assume $M_{0g} = 0$, $B_{0g} = c_0 * I_q$
+
+Covariance of vec(Λ_g^T)
+$$
+\operatorname{Cov}\!\big[\operatorname{vec}(\Lambda_g^\top)\big]
+\;=\;
+B_{0g}\ \otimes\ \Psi_g.
+$$
+
+
+Row-wise normal prior (q-dimensional vector)
+$$
+\lambda_{jg}\ \sim\ \mathcal{N}_q\!\left(m_{0,jg},\ \Psi_{jj,g}\,B_{0g}\right).
+$$
+
+Row-wise regression form with noise
+$$
+\tilde X_{g,\cdot j}\;=\;E_g\,\lambda_{jg}\;+\;\varepsilon_{g,\cdot j},
+\qquad
+\varepsilon_{g,\cdot j}\ \sim\ \mathcal{N}_{N_g}\!\left(0,\ \psi_{jg}\,I\right).
+$$
+
+
+
