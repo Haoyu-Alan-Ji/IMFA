@@ -1,0 +1,172 @@
+\section{IMFA：理论与推断}
+
+\subsection{模型定义（Infinite Mixtures of \textit{Finite} Factor Analysers）}
+令观测向量为 $x_i=(x_{i1},\dots,x_{ip})^\top\in\mathbb{R}^p$，$i=1,\dots,N$。IMFA 将 $x_i$ 建模为\emph{无限混合}的高斯–因子核：
+\begin{equation}\label{eq:imfa-mixture}
+f(x_i\mid\Theta)=\sum_{g=1}^{\infty}\pi_g\ \mathcal N_p\!\big(x_i;\mu_g,\Sigma_g\big),
+\qquad 
+\Sigma_g=\Lambda_g\Lambda_g^\top+\Psi_g .
+\end{equation}
+其中每个簇 $g$ 的核为\emph{有限维}因子分析（FA）：
+\begin{equation}\label{eq:fa-kernel}
+x_i=\mu_g+\Lambda_g\eta_i+\varepsilon_{ig},\quad 
+\eta_i\sim\mathcal N_q(0,I_q),\quad 
+\varepsilon_{ig}\sim\mathcal N_p(0,\Psi_g),\quad 
+\Psi_g=\mathrm{Diag}(\psi_{1g},\dots,\psi_{pg}).
+\end{equation}
+这里 $\mu_g\in\mathbb{R}^p$ 与 $\Lambda_g\in\mathbb{R}^{p\times q}$ 分别为\emph{簇特异}均值与载荷矩阵，$\Psi_g$ 为对角独特方差矩阵。注意：IMFA 中“无限”仅指簇数（混合分量数），而因子维度 $q$ 为\emph{有限}且通常预先指定（或在一个较小候选集合内比较选择）。
+
+为便于推断，引入簇指示变量 $z_{ig}\in\{0,1\}$，满足 $\sum_{g\ge1} z_{ig}=1$，并可显式抽样因子得分 $\eta_i$。边缘化 $\eta_i$ 后，簇内协方差即为式 \eqref{eq:imfa-mixture} 中的 $\Sigma_g=\Lambda_g\Lambda_g^\top+\Psi_g$。
+
+\subsection{非参数先验：PYP/DP 折棍（簇数“无限”）}
+IMFA 采用 Pitman--Yor 过程（PYP）或其特例 Dirichlet 过程（DP）为混合权重赋予无限维先验。以 PYP 为例（stick-breaking）：
+\begin{equation}\label{eq:pyp-stick}
+\nu_g\sim\mathrm{Beta}(1-d,\ \alpha+g d),\qquad 
+\pi_g=\nu_g\prod_{\ell<g}(1-\nu_\ell),
+\qquad d\in[0,1),\ \alpha>-d.
+\end{equation}
+其中 $d$ 为折扣参数、$\alpha$ 为浓度参数。$d=0$ 时退化为 DP（尾部更快衰减）；$d>0$ 时具有更厚尾部，先验上更倾向产生更多小簇。
+
+基底分布 $H_0$（簇参数的先验）取为有限 FA 核的先验（见 \S\ref{sec:within-prior}），因此 IMFA 的每个簇仍保持“有限因子”的 FA 结构。
+
+\subsection{簇内先验（沿用 MFA 的共轭先验）}\label{sec:within-prior}
+为获得高效的 Gibbs 更新，采用与标准 MFA 一致的条件共轭先验。
+
+\paragraph{载荷矩阵（矩阵正态）}
+\begin{equation}\label{eq:mn-prior}
+\Lambda_g^\top \sim \mathcal{MN}_{p\times q}\big(M_{0g}^\top,\ \Psi_g,\ B_{0g}\big).
+\end{equation}
+等价地，逐行写为（给定 $\psi_{jg}$）：
+\begin{equation}\label{eq:row-normal-prior}
+\lambda_{jg}\mid \psi_{jg}\ \sim\ \mathcal N_q\big(m_{0,jg},\ \psi_{jg}B_{0g}\big),\qquad j=1,\dots,p,
+\end{equation}
+其中 $\lambda_{jg}$ 为 $\Lambda_g$ 的第 $j$ 行向量。矩阵正态的向量化协方差为
+\begin{equation}\label{eq:cov-vec}
+\operatorname{Cov}\!\big[\mathrm{vec}(\Lambda_g^\top)\big]=B_{0g}\otimes \Psi_g .
+\end{equation}
+这里 $B_{0g}\in\mathbb{R}^{q\times q}$ 控制列方向（因子维度方向）的先验协方差，$\Psi_g$ 控制行方向（观测变量方向）的尺度。
+
+\paragraph{均值先验}
+\begin{equation}\label{eq:mu-prior}
+\mu_g \sim \mathcal N_p(\tilde\mu,\ \phi^{-1}I_p),
+\end{equation}
+其中 $\tilde\mu$ 可取整体样本均值，$\phi$ 为先验精度（控制均值收缩强度）。
+
+\paragraph{独特方差先验（避免 Heywood）}
+\begin{equation}\label{eq:psi-prior}
+\psi_{jg} \sim \mathrm{IG}(a_0,b_{0j}),\qquad j=1,\dots,p,
+\end{equation}
+常用适度信息化超参数以避免 $\psi_{jg}$ 过小（Heywood 问题）。当 $N/p$ 较小导致样本协方差不稳定时，可用岭型替代量来设定 $b_{0j}$ 以增强稳健性。
+
+\subsection{Slice 采样实现（slice-efficient，几何序列 $\xi$）}
+直接处理式 \eqref{eq:imfa-mixture} 的无穷和不可行，采用 slice 采样实现自适应截断。对每个样本引入切片变量 $u_i>0$，并引入与 $\pi$ 独立的确定几何序列
+\begin{equation}\label{eq:xi-geom}
+\xi_g=(1-\rho)\rho^{g-1},\qquad \rho\in[0,1).
+\end{equation}
+构造增广联合密度
+\begin{equation}\label{eq:joint-x-u}
+f(x,u\mid \Theta,\Pi)=\sum_{g=1}^{\infty} \pi_g\,\mathrm{Unif}\!\big(u;\ 0,\xi_g\big)\ \mathcal N_p\!\big(x;\ \mu_g,\Sigma_g\big).
+\end{equation}
+于是给定 $u_i$ 时，仅有有限多个分量满足 $u_i<\xi_g$，即“活跃簇集合”
+\begin{equation}\label{eq:active-set}
+A_\xi(u_i)=\{g:\ u_i<\xi_g\},\qquad 
+\tilde G=\max_{1\le i\le N}\ |A_\xi(u_i)|.
+\end{equation}
+每次迭代只需对 $g\in\{1,\dots,\tilde G\}$ 的活跃簇进行计算与更新。经验上取 $\rho\approx0.75$ 常能兼顾混合与计算效率。
+
+\emph{备注：}亦可使用 Walker 形式的切片（如令 $\xi_g=\pi_g$）；采用与 $\pi$ 独立的几何序列常更稳定、实现更直接。
+
+\subsection{联合后验与 Gibbs/MH 更新}
+给定活跃簇上界 $\tilde G$，IMFA 的联合密度（略去常数）可写为
+\begin{equation}\label{eq:joint-density}
+\begin{aligned}
+&f(X,\{\eta_i\},Z,U,\Upsilon,\Theta)\ \propto\\
+&\ \ \prod_{i=1}^N\prod_{g\in A_\xi(u_i)} \mathcal N_p\!\big(x_i;\ \mu_g+\Lambda_g\eta_i,\ \Psi_g\big)^{z_{ig}}
+\ \cdot\ \prod_{i=1}^N \mathcal N_q(\eta_i;0,I_q) \\
+&\ \ \cdot\ \prod_{i=1}^N\prod_{g\ge1} \Big(\tfrac{\pi_g}{\xi_g}\mathbf 1\{u_i<\xi_g\}\Big)^{z_{ig}}
+\ \cdot\ \prod_{g\ge1} p(\nu_g\mid \alpha,d)\ \cdot\ \prod_{g\ge1} p(\mu_g,\Lambda_g,\Psi_g).
+\end{aligned}
+\end{equation}
+
+\paragraph{更新 $\eta_i\mid z_i=g$（高斯--高斯）}
+\begin{equation}\label{eq:eta-update}
+V_{\eta,g}=\big(I_q+\Lambda_g^\top\Psi_g^{-1}\Lambda_g\big)^{-1},\quad 
+m_{\eta,g}=V_{\eta,g}\Lambda_g^\top\Psi_g^{-1}\big(x_i-\mu_g\big),\quad
+\eta_i\mid - \ \sim\ \mathcal N_q(m_{\eta,g},\ V_{\eta,g}).
+\end{equation}
+
+\paragraph{更新 $\Lambda_g$（矩阵正态，共轭块更新）}
+将簇 $g$ 的样本堆成 $\tilde X_g=X_g-\mathbf 1\mu_g^\top$，$E_g=[\eta_i]_{i\in\mathcal I_g}$：
+\begin{equation}\label{eq:Lambda-update}
+B_{ng}^{-1}=B_{0g}^{-1}+E_g^\top E_g,\qquad 
+M_{ng}^\top=\big(\tilde X_g^\top E_g + M_{0g}^\top B_{0g}^{-1}\big)\,B_{ng},
+\end{equation}
+\begin{equation}\label{eq:Lambda-post}
+\Lambda_g^\top\mid -\ \sim\ \mathcal{MN}_{p\times q}\big(M_{ng}^\top,\ \Psi_g,\ B_{ng}\big).
+\end{equation}
+
+\paragraph{更新 $\mu_g$（高斯共轭）}
+\begin{equation}\label{eq:mu-update}
+V_{\mu,g}=\big(\phi I_p+N_g\Psi_g^{-1}\big)^{-1},\quad 
+m_{\mu,g}=V_{\mu,g}\Big(\phi\,\tilde\mu + \Psi_g^{-1}\sum_{i\in\mathcal I_g}(x_i-\Lambda_g\eta_i)\Big),
+\end{equation}
+\begin{equation}\label{eq:mu-post}
+\mu_g\mid - \ \sim\ \mathcal N_p(m_{\mu,g},\ V_{\mu,g}).
+\end{equation}
+
+\paragraph{更新 $\psi_{jg}$（逆伽马/伽马共轭）}
+令残差 $r_{ijg}=x_{ij}-\mu_{jg}-\lambda_{jg}^\top\eta_i$：
+\begin{equation}\label{eq:psi-update}
+\psi_{jg}^{-1}\mid - \ \sim\ \mathrm{Ga}\Big(a_0+\tfrac{N_g}{2},\ b_{0j}+\tfrac12\sum_{i\in\mathcal I_g} r_{ijg}^2\Big).
+\end{equation}
+
+\paragraph{更新切片 $u_i$ 与分配 $z_i$}
+\begin{equation}\label{eq:u-update}
+u_i\mid z_i=g \ \sim\ \mathrm{Unif}(0,\xi_g),
+\end{equation}
+\begin{equation}\label{eq:z-update}
+\mathbb P(z_i=g\mid -)\ \propto\ \frac{\pi_g}{\xi_g}\ \mathbf 1\{u_i<\xi_g\}\ 
+\mathcal N_p\!\big(x_i;\ \mu_g+\Lambda_g\eta_i,\ \Psi_g\big),\quad g\in A_\xi(u_i).
+\end{equation}
+
+\paragraph{更新折棍 $\nu_g$ / 权重 $\pi_g$（PYP）}
+记 $n_g=\sum_i z_{ig}$、$n_{>g}=\sum_{\ell>g} n_\ell$：
+\begin{equation}\label{eq:nu-update}
+\nu_g\mid -\ \sim\ \mathrm{Beta}\big(1-d+n_g,\ \alpha+g d+n_{>g}\big),\qquad 
+\pi_g=\nu_g\prod_{\ell<g}(1-\nu_\ell).
+\end{equation}
+可进一步为 $(\alpha,d)$ 置超先验并用 MH 步更新（如 $\alpha$ 取 Gamma 超先验，$d$ 可在 $[0,1)$ 上设先验）。
+
+\emph{计算说明：}实现时常给活跃上界 $\tilde G$ 设温和上限（如 $\min\{N-1,50\}$）作为候选集合；真正解释时使用非空簇数 $G_0=\#\{g:n_g>0\}$。
+
+\subsection{识别性与实务问题}
+\paragraph{旋转不唯一} 因子模型满足：对任意正交矩阵 $R$，$(\Lambda_gR,\ R^\top\eta_i)$ 与 $(\Lambda_g,\eta_i)$ 等价。聚类与协方差估计主要依赖 $\Sigma_g$，不受影响；若需可解释载荷，可在后处理用参数扩展与 Procrustes 对齐。
+\paragraph{标签交换} 混合模型存在标签交换，可用换标签 moves 改善混合，并在后处理用指派算法对齐标签。
+\paragraph{$q$ 的选择} IMFA 的 $q$ 需预设，可在 $q\in\{q_{\min},\dots,q_{\max}\}$ 上用预测对数似然、PPRE 或信息准则比较。与 MIFA/IMIFA 相比，IMFA 不通过 MGP 自动学习 $q$。
+\paragraph{Heywood 与初始化} 通过对 $\psi_{jg}$ 设定合适先验与稳健初始化规避；$z_i$ 可用层次聚类或 EM 初始化，$(\mu,\Lambda,\Psi)$ 可从先验或 EM 结果初始化。
+
+\subsection{拟合优度与收敛诊断（建议）}
+可用后验预测检验（PPRE）：比较观测与复制数据的直方图计数矩阵 $H$、$H^{(r)}$ 的 Frobenius 范数差并标准化，观察其分布（箱线图/中位数）。多链诊断可用 PSRF；计算前建议先做标签与旋转对齐以避免不可识别性干扰。
+
+\subsection{小结：IMFA vs.\ MFA / MIFA / IMIFA}
+IMFA = \emph{无限簇 + 有限因子}：簇数由 PYP/DP + slice 自适应确定，簇内仍为标准有限维 FA，载荷先验与后验更新沿用 MFA 的共轭公式。
+MFA 为\emph{有限簇 + 有限因子}（$G,q$ 都需指定）；
+MIFA/IMIFA 进一步引入 MGP 收缩以\emph{自动学习因子数}（IMIFA 还同时非参数化簇数）。
+当目标是“簇数未知但簇内协方差可由低维结构刻画”时，IMFA 提供直接且稳健的建模与推断框架。
+
+\paragraph{记法速查（核心等式）}
+\[
+\Lambda_g^\top \sim \mathcal{MN}_{p\times q}(M_{0g}^\top,\Psi_g,B_{0g}),\qquad 
+\operatorname{Cov}[\mathrm{vec}(\Lambda_g^\top)]=B_{0g}\otimes\Psi_g.
+\]
+\[
+\lambda_{jg}\mid\psi_{jg}\sim\mathcal N_q(m_{0,jg},\psi_{jg}B_{0g}),\qquad 
+\mu_g\sim\mathcal N_p(\tilde\mu,\phi^{-1}I_p).
+\]
+\[
+\eta_i\mid z_i=g \sim \mathcal N_q(m_{\eta,g},V_{\eta,g}),\quad 
+V_{\eta,g}=(I_q+\Lambda_g^\top\Psi_g^{-1}\Lambda_g)^{-1}.
+\]
+\[
+A_\xi(u)=\{g:u<\xi_g\},\qquad \xi_g=(1-\rho)\rho^{g-1}.
+\]

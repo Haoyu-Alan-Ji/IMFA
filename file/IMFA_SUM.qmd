@@ -1,0 +1,118 @@
+---
+title: "IMFA summary"
+author: "Haoyu Ji"
+format: 
+  html:
+    code-tools: true
+    df-print: paged
+    self-contained: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+setwd(here::here())
+```
+
+## Model
+
+Let $x_i=(x_{i1},\dots,x_{ip})^\top\in\mathbb{R}^p$，$i=1,\dots,N$
+
+\begin{equation}\label{eq:imfa-mixture}
+f(x_i\mid\Theta)=\sum_{g=1}^{\infty}\pi_g\ \mathcal N_p\!\big(x_i;\mu_g,\Sigma_g\big),
+\qquad 
+\Sigma_g=\Lambda_g\Lambda_g^\top+\Psi_g .
+\end{equation}
+
+For each cluster：
+\begin{equation}\label{eq:fa-kernel}
+x_i=\mu_g+\Lambda_g\eta_i+\varepsilon_{ig},\quad 
+\eta_i\sim\mathcal N_q(0,I_q),\quad 
+\varepsilon_{ig}\sim\mathcal N_p(0,\Psi_g),\quad 
+\Psi_g=\mathrm{Diag}(\psi_{1g},\dots,\psi_{pg}).
+\end{equation}
+
+Anotation:
+
+- $\mu_g\in\mathbb{R}^p$ and $\Lambda_g\in\mathbb{R}^{p\times q}$ are mean and factor loading matrix，
+- $$
+\mathcal N_p(x_i;\mu_g,\Sigma_g)
+=
+(2\pi)^{-p/2}\,|\Sigma_g|^{-1/2}\,
+\exp\!\left(
+-\frac{1}{2}(x_i-\mu_g)^\top \Sigma_g^{-1}(x_i-\mu_g)
+\right).
+$$
+- $\Psi_g$ diagonal variance matrix
+
+## How to generate a new cluster to make it infinite?
+
+Use Pitman-Yor Procession (PYP),
+
+\begin{equation}\label{eq:pyp-stick}
+\nu_g\sim\mathrm{Beta}(1-d,\ \alpha+g d),\qquad 
+\pi_g=\nu_g\prod_{\ell<g}(1-\nu_\ell),
+\qquad d\in[0,1),\ \alpha>-d.
+\end{equation}
+
+When $d=0$ it's DP
+
+## In each cluster
+
+\begin{equation}\label{eq:mn-prior}
+\Lambda_g^\top \sim \mathcal{MN}_{p\times q}\big(M_{0g}^\top,\ \Psi_g,\ B_{0g}\big).
+\end{equation}
+
+Thus, for $\psi_{jg}$：
+
+\begin{equation}\label{eq:row-normal-prior}
+\lambda_{jg}\mid \psi_{jg}\ \sim\ \mathcal N_q\big(m_{0,jg},\ \psi_{jg}B_{0g}\big),\qquad j=1,\dots,p,
+\end{equation}
+
+Annotation: 
+
+- $$
+X \sim \mathcal{MN}_{m\times n}(M,U,V)
+\quad\Longrightarrow\quad
+\mathrm{vec}(X) \sim \mathcal N\!\big(\mathrm{vec}(M),\, V\otimes U\big).
+$$
+
+- $\lambda_{jg}$ is $\Lambda_g$ the vector of $j$ row,
+
+\begin{equation}\label{eq:cov-vec}
+\operatorname{Cov}\!\big[\mathrm{vec}(\Lambda_g^\top)\big]=B_{0g}\otimes \Psi_g .
+\end{equation}
+
+- $B_{0g}\in\mathbb{R}^{q\times q}$ is the prior covariance of the column, implys controlling the factor loadings
+- $\Psi_g$ is the covariance of the rows, implys controlling the variables
+
+## Use slice sampling
+
+For each sample introduce $u_i>0$，
+
+For each cluster introduce $\xi$, $\xi_g=(1-\rho)\rho^{g-1},\qquad \rho\in[0,1)$.
+
+We have to Truncate the infinite cluster into a finite set of useful clusters,
+
+\begin{equation}\label{eq:joint-x-u}
+f(x,u\mid \Theta,\Pi)=\sum_{g=1}^{\infty} \pi_g\,\mathrm{Unif}\!\big(u;\ 0,\xi_g\big)\ \mathcal N_p\!\big(x;\ \mu_g,\Sigma_g\big).
+\end{equation}
+
+When we have a $u_i$ 时，we can assume only finite $u_i<\xi_g$，
+
+The general function can be written as,
+
+\begin{equation}\label{eq:active-set}
+A_\xi(u_i)=\{g:\ u_i<\xi_g\},\qquad 
+\tilde G=\max_{1\le i\le N}\ |A_\xi(u_i)|.
+\end{equation}
+
+Each time we only compute and update $g\in\{1,\dots,\tilde G\}$
+
+Annotation:
+
+- $\rho$: Assign a monotonically decreasing upper bound threshold to each cluster.
+- $\Theta$: all of the parameters
+- $\Pi$: all settings involving weights
+
+Then we can use MCMC to update the parameters!
+

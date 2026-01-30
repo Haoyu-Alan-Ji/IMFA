@@ -1,0 +1,49 @@
+/*-- scss:defaults --*/
+
+$font-family-sans-serif: "Calibri", sans-serif;
+$body-font-family: $font-family-sans-serif;
+$presentation-heading-font: "Calibri", sans-serif;
+
+
+
+/*-- scss:rules --*/
+.title-slide {
+  h1 {
+    font-size: 3.0em;
+    margin-bottom: 0.5em;
+  }
+
+  h2 {
+    font-size: 1.2em;
+    font-weight: 400;
+  }
+}
+
+.justify {
+  text-align: justify;
+}
+
+.small-text {
+  font-size: 0.8em;
+}
+
+img {
+  max-height: 800px;
+  max-width: 1000px;
+  display: block;
+  margin: 0 auto;
+}
+
+.refs {
+  font-size: 14px;
+  line-height: 1.4;
+  color: #444;
+}
+
+.footer {
+  position: absolute;
+  bottom: 10px;
+  right: 20px;
+  font-size: 0.6em;
+  color: #888;
+}
