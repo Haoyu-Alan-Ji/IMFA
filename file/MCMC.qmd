@@ -1,0 +1,14 @@
+---
+title: "MCMC"
+author: "Haoyu Ji"
+format: 
+  html:
+    code-tools: true
+    df-print: paged
+    self-contained: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+setwd(here::here())
+```
