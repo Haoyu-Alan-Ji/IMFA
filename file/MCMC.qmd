@@ -1,10 +1,12 @@
 ---
 title: "MCMC"
 author: "Haoyu Ji"
-format: 
-  html:
-    code-tools: true
-    df-print: paged
+format:
+  revealjs:
+    theme: 
+      - ../pre_style.scss
+      - serif
+    slide-number: true
     self-contained: true
 ---
 ```{r setup, include=FALSE}
@@ -12,3 +14,94 @@ knitr::opts_chunk$set(echo = TRUE)
 if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
 setwd(here::here())
 ```
+
+## Before MCMC: Initial value setting
+
+- $z_i$
+- $\eta_i$
+- 
+## Step1: Design $u_i$ in slice sampling 
+
+Let $z_i = g$, which means sample i belongs to cluster g.  
+
+- Conditional probability of $u_i$:
+
+$$
+u_i \mid z_i = g \sim \mathrm{Unif}(0,\xi_g)
+$$
+
+- Then define $A_{\xi}(u_i)$
+
+$$
+A_{\xi}(u_i) = \{\, g : u_i < \xi_g \,\}
+$$
+
+Using this method, we obtained the cluster index corresponding to each sample (notice that $u_i$ is introduced by each x).
+
+## Step2: Update cluster
+
+If the largest cluster index is greater than the initial cluster number we set, then we need to set an initial value for the new cluster. If it is less than the initial cluster number, then we only need to use the relevant clusters in this optimization.
+
+- Conditional probability of cluster assignment:
+
+$$
+\Pr(z_i = g \mid \cdot)\ \propto\ \left(\frac{\pi_g}{\xi_g}\,\mathbf{1}(u_i < \xi_g)\right)\,
+\mathcal{N}\!\left(x_i;\, \mu_g + \lambda_g \eta_i,\, \psi_g\right)
+$$
+
+Notice taht we can already get $\frac{\pi_g}{\xi_g}$!
+
+## Step3: Update the cluster of each sample
+
+$$
+w_i (weight) = \left(\frac{\pi_g}{\xi_g}\,\mathbf{1}(u_i < \xi_g)\right)\, \mathcal{N}\!\left(x_i;\, \mu_g + \lambda_g \eta_i,\, \psi_g\right)
+$$
+
+Normalize $w_i$, for the existence of indicator functions, we actually have each segment on CDF.
+
+Uniform sampling, and determine the new cluster to which the sample belongs based on the interval it falls into. We will get the new cluster allocation.
+
+## Step4: Update stick breaking parameter $\nu_g$ and $\pi_g$
+
+- $\nu_g\sim\mathrm{Beta}(1-d,\ \alpha+g d)$
+
+- $\pi_g=\nu_g\prod_{\ell<g}(1-\nu_\ell), d\in[0,1),\ \alpha>-d$.
+
+## Step5: Gibbs Update for cluster parameters $\eta_i, \mu_g, \lambda_g$ {.scrollable .smaller}
+
+Apply the old parameters ($\eta, \mu, \lambda$) gradually to the new allocation.
+
+- First is Factor Score $\eta$:
+$$
+\eta_i \mid \cdot \sim \mathcal{N}(m_i, V_g), \qquad
+V_g = \left(1 + \frac{\lambda_g^2}{\psi_g}\right)^{-1}, \qquad
+m_i = V_g\,\frac{\lambda_g}{\psi_g}\,(x_i - \mu_g).
+$$
+
+- Then cluster mean $\mu$ (updated $\eta$):
+
+$$
+\mu_g \mid \cdot \sim \mathcal{N}(\bar{m}_g, \bar{V}_g), \qquad
+\bar{V}_g = \left(1 + \frac{n_g}{\psi_g}\right)^{-1}, \qquad
+\bar{m}_g = \bar{V}_g\left(\frac{1}{\psi_g}\sum_{i \in I_g} (x_i - \lambda_g \eta_i)\right).
+$$
+
+- Then Factor Loadings $\lambda$ (updated $\mu$ and $\eta$):
+
+$$
+\lambda_g \mid \cdot \sim \mathcal{N}(m_{\lambda g}, V_{\lambda g}), \qquad
+V_{\lambda g} = \left(1 + \frac{1}{\psi_g}\sum_{i \in I_g} \eta_i^2\right)^{-1}, \qquad
+m_{\lambda g} = V_{\lambda g}\left(\frac{1}{\psi_g}\sum_{i \in I_g} \eta_i (x_i - \mu_g)\right).
+$$
+
+- At the end, Residuals $\psi_g$
+
+$$
+\psi_g \mid \cdot \sim \mathrm{IG}\!\left(
+a_0 + \frac{n_g}{2},\;
+b_0 + \frac{1}{2}\sum_{i \in I_g}\bigl(x_i - \mu_g - \lambda_g \eta_i\bigr)^2
+\right).
+$$
+
+## Supplement: Gaussian conjugate
+

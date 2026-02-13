@@ -42,6 +42,7 @@ Anotation:
 -\frac{1}{2}(x_i-\mu_g)^\top \Sigma_g^{-1}(x_i-\mu_g)
 \right).
 $$
+
 - $\Psi_g$ diagonal variance matrix
 
 ## How to generate a new cluster to make it infinite?
