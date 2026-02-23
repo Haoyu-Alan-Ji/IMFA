@@ -1,0 +1,65 @@
+---
+title: "part2: meta-epi"
+author: "Haoyu Ji"
+format: 
+  html:
+    self-contained: true
+execute:
+  echo: true
+  warning: false
+  message: false   
+date: today
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+setwd(here::here())
+```
+
+```{r}
+library(IMIFA)
+data(olive)
+
+simIMIFA <- mcmc_IMIFA(olive, method="IMIFA", n.iters=50000, verbose=FALSE)
+
+resIMIFA <- get_IMIFA_results(simIMIFA, z.avgsim=TRUE)
+
+summary(resIMIFA, MAP=TRUE)
+plot(resIMIFA, plot.meth="zlabels", zlabels=olive$area, g=2)
+plot(resIMIFA, plot.meth="means", param="loadings", heat.map=TRUE, g=1)
+
+simMFA   <- mcmc_IMIFA(olive, method="MFA", n.iters=10000, range.G=3:6, range.Q=0:3, centering=FALSE, 
+                       scaling="unit", uni.type="isotropic", score.switch=FALSE)
+```
+
+
+```{r}
+simIMFA <- mcmc_IMIFA(
+  olive,
+  method   = "IMFA",
+  n.iters  = 10000,
+  range.G  = 20, 
+  range.Q  = 0:6,
+  centering = TRUE,
+  scaling   = "unit",
+  BNP = bnpControl(
+    discount   = 0, 
+    learn.alpha = TRUE 
+    # trunc.G =
+  ),
+  storage = storeControl(
+    score.switch = FALSE 
+  )
+)
+```
+
+```{r}
+resIMFA <- get_IMIFA_results(simIMFA, criterion = "bicm", z.avgsim = TRUE)
+
+summary(resIMFA, MAP = TRUE)
+
+plot(resIMFA, plot.meth = "zlabels", g = 2)  
+plot(resIMFA, plot.meth = "zlabels", g = 5)  
+plot(resIMFA, plot.meth="means", param="loadings", heat.map=TRUE, g=1)
+```
