@@ -1,0 +1,147 @@
+---
+title: "how feature selection works"
+author: "Haoyu Ji"
+format: 
+  html:
+    self-contained: true
+date: today
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+setwd(here::here())
+```
+
+```{r dat, eval=FALSE}
+library(IMIFA)
+data(olive)
+
+st <- storeControl(
+  mu.switch   = TRUE,
+  score.switch= FALSE, 
+  load.switch = TRUE,
+  psi.switch  = TRUE,
+  pi.switch   = TRUE
+)
+
+mgp <- mgpControl(
+  active.crit = "BD",
+  eps  = 0.1,  
+  prop = 0.7  
+)
+
+simIMIFA <- mcmc_IMIFA(
+  olive, method="IMIFA",
+  n.iters=50000,
+  storage = st,
+  MGP     = mgp,
+  verbose = FALSE
+)
+saveRDS(simIMIFA, file = here::here('data', "simIMIFA_olive.rds"), compress = "xz")
+resIMIFA <- get_IMIFA_results(simIMIFA, z.avgsim=TRUE)
+saveRDS(resIMIFA, file = here::here('data', "resIMIFA_olive.rds"), compress = "xz")
+```
+
+```{r}
+feature_select_IMIFA <- function(res, eps = 0.1, p_cut = 0.9) {
+  G <- length(res$Loadings$lmats)
+  out <- vector("list", G)
+
+  for (g in seq_len(G)) {
+    L <- res$Loadings$lmats[[g]]  # p x q_g x S_g
+    if (is.null(L)) { out[[g]] <- data.frame(); next }
+    if (length(dim(L)) == 2L) L <- array(L, dim = c(nrow(L), ncol(L), 1L))
+
+    p <- dim(L)[1]; S <- dim(L)[3]
+
+    maxabs <- apply(abs(L), c(1, 3), max)
+    if (is.vector(maxabs)) maxabs <- matrix(maxabs, nrow = p, ncol = S)
+
+    p_active    <- rowMeans(maxabs > eps)
+    mean_maxabs <- rowMeans(maxabs)
+
+    comm <- apply(L^2, c(1, 3), sum)
+    if (is.vector(comm)) comm <- matrix(comm, nrow = p, ncol = S)
+
+    psi_bar <- res$Uniquenesses$post.psi[, g]
+    psi_mat <- matrix(psi_bar, nrow = p, ncol = S)
+    h2      <- comm / (comm + psi_mat)
+    mean_h2 <- rowMeans(h2)
+
+    feat_names <- rownames(res$Loadings$post.load[[g]])
+    if (is.null(feat_names)) feat_names <- paste0("V", seq_len(p))
+
+    out[[g]] <- data.frame(
+      feature     = feat_names,
+      p_active    = p_active,
+      mean_maxabs = mean_maxabs,
+      mean_h2     = mean_h2,
+      selected    = (p_active >= p_cut)
+    )
+    out[[g]] <- out[[g]][order(out[[g]]$p_active, decreasing = TRUE), ]
+  }
+
+  names(out) <- paste0("Cluster_", seq_len(G))
+  out
+}
+
+resIMIFA <- readRDS(here::here('data', "resIMIFA_olive.rds"))
+fs <- feature_select_IMIFA(resIMIFA, eps = 0.1, p_cut = 0.9)
+```
+
+```{r}
+fs_long <- do.call(rbind, lapply(names(fs), function(cl) {
+  df <- fs[[cl]]
+  df$cluster <- cl
+  df
+}))
+
+fs_long <- fs_long[, c("cluster","feature","p_active","mean_maxabs","mean_h2","selected")]
+
+
+features <- sort(unique(fs_long$feature))
+clusters <- sort(unique(fs_long$cluster))
+
+p_active_wide <- data.frame(feature = features)
+
+for (cl in clusters) {
+  tmp <- fs_long[fs_long$cluster == cl, c("feature","p_active")]
+  p_active_wide[[paste0("p_active_", cl)]] <- tmp$p_active[match(features, tmp$feature)]
+}
+
+p_active_wide
+
+selected_wide <- data.frame(feature = features)
+for (cl in clusters) {
+  tmp <- fs_long[fs_long$cluster == cl, c("feature","selected")]
+  selected_wide[[paste0("selected_", cl)]] <- tmp$selected[match(features, tmp$feature)]
+}
+sel_mat <- as.matrix(selected_wide[ , -1, drop=FALSE])
+selected_wide$n_selected_clusters <- rowSums(sel_mat, na.rm=TRUE)
+selected_wide[order(-selected_wide$n_selected_clusters), ]
+```
+
+
+```{r}
+g <- 1
+eps  <- 0.1
+prop <- 0.7
+
+L <- resIMIFA$Loadings$lmats[[g]]
+if (length(dim(L)) == 2L) L <- array(L, dim=c(nrow(L), ncol(L), 1L))
+
+col_prop0 <- apply(abs(L) < eps, c(2, 3), mean)  # q_g x n_iter
+matplot(t(col_prop0), type="l", lty=1,
+        xlab="Iteration (retained)", ylab=paste0("Pr(|loading|<", eps, ") within column"))
+abline(h=prop, lty=2)
+title(paste0("Cluster ", g, ": near-zero proportion per factor column"))
+```
+
+```{r}
+n_feat <- sapply(fs, function(df) sum(df$selected, na.rm = TRUE))
+
+q_g <- c(6,3,3,4,2,6)
+
+data.frame(cluster = names(fs), q_g = q_g, n_selected_features = n_feat)
+```
