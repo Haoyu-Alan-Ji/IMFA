@@ -1,0 +1,462 @@
+---
+title: "how feature selection works"
+author: "Haoyu Ji"
+format: 
+  html:
+    code-tools: true
+    df-print: paged
+    self-contained: true
+    code-fold: true
+    code-summary: "Code"
+execute:
+  echo: true
+  warning: false
+  message: false   
+date: today
+---
+
+```{r setup}
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+library(IMIFA)
+library(tidyverse)
+```
+
+```{r fs}
+fs <- function(res, eps = 0.1, p_cut = 0.9) {
+  G <- length(res$Loadings$lmats)
+  out <- vector("list", G)
+
+  for (g in seq_len(G)) {
+    L <- res$Loadings$lmats[[g]]  # p x q_g x S_g
+    if (is.null(L)) { out[[g]] <- data.frame(); next }
+    if (length(dim(L)) == 2L) L <- array(L, dim = c(nrow(L), ncol(L), 1L))
+
+    p <- dim(L)[1]; S <- dim(L)[3]
+
+    maxabs <- apply(abs(L), c(1, 3), max)
+    if (is.vector(maxabs)) maxabs <- matrix(maxabs, nrow = p, ncol = S)
+
+    p_active    <- rowMeans(maxabs > eps)
+    mean_maxabs <- rowMeans(maxabs)
+
+    comm <- apply(L^2, c(1, 3), sum)
+    if (is.vector(comm)) comm <- matrix(comm, nrow = p, ncol = S)
+
+    psi_bar <- res$Uniquenesses$post.psi[, g]
+    psi_mat <- matrix(psi_bar, nrow = p, ncol = S)
+    h2 <- comm / (comm + psi_mat)
+    mean_h2 <- rowMeans(h2)
+
+    feat_names <- rownames(res$Loadings$post.load[[g]])
+    if (is.null(feat_names)) feat_names <- paste0("V", seq_len(p))
+
+    out[[g]] <- data.frame(
+      feature     = feat_names,
+      p_active    = p_active,
+      mean_maxabs = mean_maxabs,
+      mean_h2     = mean_h2,
+      selected    = (p_active >= p_cut)
+    )
+    out[[g]] <- out[[g]][order(out[[g]]$p_active, decreasing = TRUE), ]
+  }
+
+  names(out) <- paste0("Cluster", seq_len(G))
+  out
+}
+```
+
+```{r}
+norm_name <- function(x, prefix = "Cluster") {
+  if (is.null(names(x)) || any(names(x) == "")) {
+    names(x) <- paste0(prefix, seq_along(x))
+  }
+  x
+}
+```
+
+```{r}
+nrel <- function(loadings_list, psi_list = NULL) {
+  loadings_list <- norm_name(loadings_list)
+
+  out <- map2_dfr(
+    loadings_list,
+    names(loadings_list),
+    function(L, cl) {
+      common_var <- if (ncol(L) == 0L) rep(0, nrow(L)) else rowSums(L^2)
+      row_l2     <- sqrt(common_var)
+      row_sqsum  <- common_var
+      psi_g <- psi_list[[cl]]
+      comm_prop <- common_var / (common_var + psi_g)
+
+      feat_names <- rownames(L)
+      if (is.null(feat_names)) feat_names <- as.character(seq_len(nrow(L)))
+
+      tibble::tibble(cluster = cl, feature = as.character(feat_names), feature_index = seq_len(nrow(L)),
+                      q_g = ncol(L), r_l2 = row_l2, r_sqsum = row_sqsum, r_comm = comm_prop
+                    )
+    }
+  )
+  out
+}
+```
+
+```{r}
+native_fs <- function(relevance_tbl, score = "r_comm", threshold = 0.5) {
+  out <- relevance_tbl |>
+    mutate(
+      selected = .data[[score]] >= threshold,
+      score_used = score,
+      selection_method = "threshold"
+    )
+  fs_list <- split(out, out$cluster)
+  list(fs_table = out, fs_list = fs_list)
+}
+```
+
+```{r}
+audit_fs <- function(fs, relevance_tbl) {
+  fs <- norm_name(fs)
+  relevance_tbl <- relevance_tbl |> mutate(feature = as.character(feature))
+
+  merged_list <- vector("list", length(fs))
+  names(merged_list) <- names(fs)
+
+  summary_list <- vector("list", length(fs))
+  names(summary_list) <- names(fs)
+
+  cor_safe <- function(x, y) {
+    if (length(x) == 0L || all(is.na(x)) || all(is.na(y))) return(NA_real_)
+    if (length(unique(na.omit(x))) <= 1L) return(NA_real_)
+    suppressWarnings(cor(x, y, use = "pairwise.complete.obs"))
+  }
+
+  rank_median_safe <- function(score, sel) {
+    if (sum(sel %in% TRUE, na.rm = TRUE) == 0L) return(NA_real_)
+    rk <- rank(-score, ties.method = "average", na.last = "keep")
+    median(rk[sel %in% TRUE], na.rm = TRUE)
+  }
+
+  for (cl in names(fs)) {
+    user_df <- fs[[cl]]
+    rel_df  <- relevance_tbl |> filter(cluster == cl)
+
+    user_df <- user_df |> mutate(feature = as.character(.data[["feature"]]))
+    merged <- rel_df |> left_join(user_df, by = "feature")
+
+    sel <- merged[["selected"]]
+    sel_num <- as.numeric(sel)
+
+    summary_list[[cl]] <- tibble::tibble(
+      cluster = cl,
+      n_features = nrow(merged),
+      n_selected = sum(sel, na.rm = TRUE),
+      cor_selected_r_l2 = cor_safe(sel_num, merged$r_l2),
+      cor_selected_r_sqsum = cor_safe(sel_num, merged$r_sqsum),
+      cor_selected_r_comm = cor_safe(sel_num, merged$r_comm),
+      median_rank_selected_r_l2 = rank_median_safe(merged$r_l2, sel),
+      median_rank_selected_r_sqsum = rank_median_safe(merged$r_sqsum, sel),
+      median_rank_selected_r_comm = rank_median_safe(merged$r_comm, sel)
+    )
+
+    merged_list[[cl]] <- merged
+  }
+
+  list(
+    merged = bind_rows(merged_list),
+    summary = bind_rows(summary_list)
+  )
+}
+```
+
+```{r}
+post_psi <- function(res, expected_G = NULL) {
+  psi <- res$Uniquenesses$post.psi
+  out <- lapply(seq_len(ncol(psi)), function(g) as.numeric(psi[, g]))
+  return(norm_name(out))
+}
+
+cluster_size <- function(map_labels, cluster_names = NULL) {
+  lev <- seq_along(cluster_names)
+  out <- table(factor(map_labels, levels = lev))
+  names(out) <- cluster_names
+  as.integer(out) |> setNames(names(out))
+}
+
+compute_native_baseline <- function(res, fs = NULL, score_for_selection = "r_comm",
+                                    threshold = 0.5) {
+  loadings_list <- norm_name(res$Loadings$post.load)
+  psi_list      <- post_psi(res, expected_G = length(loadings_list))
+  relevance_tbl <- nrel(loadings_list, psi_list)
+
+  q_g  <- as.integer(res$GQ.results$Q)
+  zMAP <- as.integer(res$Clust$MAP)
+  n_g  <- cluster_size(zMAP, names(loadings_list))
+
+  native_fs <- native_fs(relevance_tbl = relevance_tbl, score = score_for_selection, threshold = threshold)
+
+  cluster_summary <- native_fs$fs_table |>
+    group_by(cluster) |>
+    summarise(q_g = first(q_g), n_selected_features = sum(selected, na.rm = TRUE), .groups = "drop")
+
+  cluster_summary$n_g <- as.integer(n_g[cluster_summary$cluster])
+  audit <- audit_fs(fs, relevance_tbl)
+  
+
+  list(loadings_list = loadings_list, psi_list = psi_list, relevance = relevance_tbl,
+        native_fs_table = native_fs$fs_table, native_fs_list = native_fs$fs_list,
+        cluster_summary = cluster_summary,audit = audit
+      )
+}
+```
+
+
+```{r}
+resIMIFA <- readRDS(here::here('data', "resIMIFA_olive.rds"))
+fs1 <- fs(resIMIFA, eps = 0.1, p_cut = 0.9)
+base <- compute_native_baseline(res = resIMIFA, fs = fs, score_for_selection = "r_comm", threshold = 0.5)
+
+base$cluster_summary
+base$audit$summary
+```
+
+```{r}
+rinvgamma <- function(n, shape, rate) {
+  1 / stats::rgamma(n, shape = shape, rate = rate)
+}
+
+safe_chol <- function(S, jitter = 1e-8, max_try = 5L) {
+  S <- (S + t(S)) / 2
+  for (k in 0:max_try) {
+    out <- try(chol(S + diag(jitter * (10^k), nrow(S))), silent = TRUE)
+    if (!inherits(out, "try-error")) return(out)
+  }
+  stop("Cholesky decomposition failed even after adding jitter.")
+}
+```
+
+```{r}
+Rsparse <- function(Xg, q_g, n_iter = 4000, burn = 2000, thin = 2L,
+                    v0 = 1e-4, v1 = 1, a_pi = 1, b_pi = 1, a_psi = 2, b_psi = 1,
+                    init_Lambda = NULL, init_psi = NULL, init_mu = NULL,
+                    feature_names = NULL, verbose = FALSE) {
+  Xg <- as.matrix(Xg)
+  n  <- nrow(Xg)
+  p  <- ncol(Xg)
+
+  mu_g <- init_mu %||% colMeans(Xg)
+  Y    <- sweep(Xg, 2, mu_g, FUN = "-")
+
+  if (is.null(init_Lambda)) {
+    sv <- svd(Y)
+    r  <- min(q_g, length(sv$d))
+    Lambda <- matrix(0, nrow = p, ncol = q_g)
+    if (r > 0) {
+      Lambda[, seq_len(r)] <- sv$v[, seq_len(r), drop = FALSE] |>
+        diag(sqrt(pmax(sv$d[seq_len(r)]^2 / max(n, 1), 1e-6)), nrow = r)
+    }
+    rownames(Lambda) <- feature_names
+  } else {
+    Lambda <- as.matrix(init_Lambda)
+    rownames(Lambda) <- feature_names
+  }
+
+  psi <- as.numeric(init_psi %||% pmax(apply(Y, 2, stats::var), 1e-3))
+
+  row_norm0 <- sqrt(rowSums(Lambda^2))
+  gamma <- as.integer(row_norm0 > 0.05)
+  pi_g  <- min(max(mean(gamma), 1e-4), 1 - 1e-4)
+
+  ## save
+  n_save <- floor((n_iter - burn) / thin)
+
+  gamma_draws <- matrix(NA_integer_, nrow = p, ncol = n_save,
+                        dimnames = list(feature_names, paste0("draw", seq_len(n_save))))
+
+  Lambda_sum <- matrix(0, nrow = p, ncol = q_g)
+  psi_sum <- gamma_sum <- row_l2_sum <- row_sqsum_sum <- h2_sum <- numeric(p)
+  pi_sum <- 0
+  save_id <- 0L
+
+  for (iter in seq_len(n_iter)) {
+    ## 1) Eta
+    # V_eta = (I + Lambda' Psi^{-1} Lambda)^(-1)
+    prec_eta <- diag(q_g) + crossprod(Lambda, Lambda / psi)
+    V_eta    <- solve(prec_eta)
+    R_eta    <- safe_chol(V_eta)
+
+    # E[eta_i | x_i, ...] = y_i Psi^{-1} Lambda V_eta
+    Eta_mean <- Y %*% (Lambda / psi) %*% V_eta
+    Eta      <- Eta_mean + matrix(stats::rnorm(n * q_g), nrow = n, ncol = q_g) %*% R_eta
+
+    XtX <- crossprod(Eta)
+
+    ## 2) Lambda_{j g .} by row
+    for (j in seq_len(p)) {
+      vj <- if (gamma[j] == 1L) v1 else v0
+
+      Vj <- solve(XtX / psi[j] + diag(1 / vj, q_g))
+      Rj <- safe_chol(Vj)
+      mj <- Vj %*% (crossprod(Eta, Y[, j, drop = FALSE]) / psi[j])
+
+      Lambda[j, ] <- as.numeric(mj + t(Rj) %*% stats::rnorm(q_g))
+    }
+
+    ## 3) gamma_{jg}
+    pi_g <- min(max(pi_g, 1e-8), 1 - 1e-8)
+
+    for (j in seq_len(p)) {
+      lam_j <- Lambda[j, ]
+
+      log_p1 <- log(pi_g) +
+        sum(stats::dnorm(lam_j, mean = 0, sd = sqrt(v1), log = TRUE))
+
+      log_p0 <- log(1 - pi_g) +
+        sum(stats::dnorm(lam_j, mean = 0, sd = sqrt(v0), log = TRUE))
+
+      m <- max(log_p0, log_p1)
+      p1 <- exp(log_p1 - m) / (exp(log_p0 - m) + exp(log_p1 - m))
+
+      gamma[j] <- stats::rbinom(1, size = 1, prob = p1)
+    }
+
+    ## 4) pi_g
+    pi_g <- stats::rbeta(1,
+                         shape1 = a_pi + sum(gamma),
+                         shape2 = b_pi + p - sum(gamma))
+
+    ## 5) psi_j
+    resid <- Y - Eta %*% t(Lambda)
+    rss   <- colSums(resid^2)
+
+    psi <- rinvgamma(n = p, shape = a_psi + n / 2, rate = b_psi + rss / 2)
+    psi <- pmax(psi, 1e-8)
+
+    if (iter > burn && ((iter - burn) %% thin == 0L)) {
+      save_id <- save_id + 1L
+
+      gamma_draws[, save_id] <- gamma
+
+      Lambda_sum <- Lambda_sum + Lambda
+      psi_sum <- psi_sum + psi
+      pi_sum <- pi_sum + pi_g
+      gamma_sum <- gamma_sum + gamma
+
+      row_sqsum_now <- rowSums(Lambda^2)
+      row_l2_now <- sqrt(row_sqsum_now)
+      h2_now <- row_sqsum_now / (row_sqsum_now + psi)
+
+      row_sqsum_sum <- row_sqsum_sum + row_sqsum_now
+      row_l2_sum <- row_l2_sum + row_l2_now
+      h2_sum <- h2_sum + h2_now
+    }
+
+    if (verbose && (iter %% 500 == 0L)) {
+      message(sprintf(
+        "[cluster fit] iter = %d / %d, mean(gamma) = %.3f, pi_g = %.3f",
+        iter, n_iter, mean(gamma), pi_g
+      ))
+    }
+  }
+
+  Lambda_mean <- Lambda_sum / n_save
+  rownames(Lambda_mean) <- feature_names
+  psi_mean <- psi_sum / n_save
+  pi_mean <- pi_sum / n_save
+  pip <- gamma_sum / n_save
+  gamma_mode <- as.integer(pip >= 0.5)
+  mean_row_l2 <- row_l2_sum / n_save
+  mean_row_sqsum <- row_sqsum_sum / n_save
+  mean_h2 <- h2_sum / n_save
+
+  list(feature = feature_names, mu_g = mu_g, q_g = q_g, pip = pip,
+        gamma_mode = gamma_mode, mean_row_l2 = mean_row_l2, mean_row_sqsum = mean_row_sqsum, mean_h2 = mean_h2,
+        Lambda_mean = Lambda_mean, psi_mean = psi_mean, pi_mean = pi_mean, gamma_samples = gamma_draws
+      )
+}
+```
+
+```{r}
+Rsparse_imifa <- function(dat, res, n_iter = 4000, burn = 2000, thin = 2L,
+                          v0 = 1e-4, v1 = 1, a_pi = 1, b_pi = 1, a_psi = 2, b_psi = 1,
+                          verbose = FALSE) {
+  dat_num <- select(as.data.frame(dat), where(is.numeric))
+  X <- as.matrix(dat_num)
+  if (is.null(colnames(X))) {
+    colnames(X) <- paste0("V", seq_len(ncol(X)))
+  }
+
+  zMAP <- as.integer(res$Clust$MAP)
+  q_g  <- as.integer(res$GQ.results$Q)
+
+  loadings_list <- norm_name(res$Loadings$post.load)
+  psi_list <- post_psi(res)
+
+  G <- length(q_g)
+  fits <- vector("list", G)
+  names(fits) <- paste0("Cluster", seq_len(G))
+
+  for (g in seq_len(G)) {
+    idx <- which(zMAP == g)
+    Xg <- X[idx, , drop = FALSE]
+
+    if (verbose) {
+      message(sprintf(
+        "[row-sparse wrapper] Fitting Cluster%d: n_g = %d, q_g = %d",
+        g, length(idx), q_g[g]
+      ))
+    }
+
+    init_Lambda <- loadings_list[[g]]
+    init_psi    <- psi_list[[g]]
+
+    fits[[g]] <- Rsparse(Xg = Xg, q_g = q_g[g], n_iter = n_iter, burn = burn, thin = thin,
+                          v0 = v0, v1 = v1, a_pi = a_pi, b_pi = b_pi, a_psi = a_psi, b_psi = b_psi,
+                          init_Lambda = init_Lambda, init_psi = init_psi, init_mu = colMeans(Xg), feature_names = colnames(X),
+                          verbose = verbose
+                        )
+  }
+
+  cluster_sizes <- table(factor(zMAP, levels = seq_len(G)))
+  names(cluster_sizes) <- names(fits)
+
+  list(fits = fits, zMAP = zMAP, q_g = q_g, cluster_sizes = cluster_sizes)
+}
+
+fs_RS <- function(row_sparse_fit, p_cut = 0.5) {
+  fits <- row_sparse_fit$fits
+  out  <- vector("list", length(fits))
+  names(out) <- names(fits)
+
+  for (g in seq_along(fits)) {
+    fit_g <- fits[[g]]
+    df <- data.frame(feature = fit_g$feature, p_inclusion = fit_g$pip,
+                      mean_row_l2 = fit_g$mean_row_l2, mean_row_sqsum = fit_g$mean_row_sqsum, mean_h2 = fit_g$mean_h2,
+                      selected = (fit_g$pip >= p_cut), stringsAsFactors = FALSE
+                    )
+    df <- df[order(df$p_inclusion, decreasing = TRUE), ]
+    rownames(df) <- NULL
+    out[[g]] <- df
+  }
+  out
+}
+```
+
+```{r}
+fs_old <- fs(resIMIFA, eps = 0.1, p_cut = 0.9)
+
+rowss_fit <- Rsparse_imifa(dat = olive, res = resIMIFA, n_iter = 3000, burn = 1500, thin = 2,
+                            v0 = 1e-4, v1 = 1, a_pi = 1, b_pi = 1, a_psi = 2, b_psi = 1,
+                            verbose = TRUE
+                          )
+fs_rowss <- fs_RS(rowss_fit, p_cut = 0.5)
+
+loadings_list <- norm_name(resIMIFA$Loadings$post.load)
+psi_list <- post_psi(resIMIFA)
+relevance_tbl <- nrel(loadings_list, psi_list)
+
+audit_old <- audit_fs(fs = fs_old, relevance_tbl = relevance_tbl)
+audit_rowss <- audit_fs(fs = fs_rowss, relevance_tbl = relevance_tbl)
+
+audit_old$summary
+audit_rowss$summary
+```

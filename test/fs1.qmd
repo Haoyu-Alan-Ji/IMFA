@@ -3,14 +3,20 @@ title: "how feature selection works"
 author: "Haoyu Ji"
 format: 
   html:
+    code-tools: true
+    df-print: paged
     self-contained: true
+    code-fold: true
+    code-summary: "Code"
+execute:
+  echo: true
+  warning: false
+  message: false   
 date: today
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r setup}
 if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
-setwd(here::here())
 ```
 
 ```{r dat, eval=FALSE}
