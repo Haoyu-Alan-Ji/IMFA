@@ -1,0 +1,415 @@
+# Joint row-sparse finite mixture of factor analysers
+
+simfun <- function(n = 50, p = 60, q = c(2, 2, 3), active = 5,
+                   loadings = c(2, 3, 4), psi = 1, seed = 200) {
+  set.seed(seed)
+  G <- length(q)
+  stopifnot(length(loadings) == G)
+
+  Xg <- vector("list", G)
+  eta <- vector("list", G)
+  eps <- vector("list", G)
+  Lambda <- vector("list", G)
+  Sigma <- vector("list", G)
+  allocation <- vector("list", G)
+
+  for (g in seq_len(G)) {
+    L <- matrix(0, p, q[g])
+    A <- matrix(0, active, q[g])
+
+    for (j in seq_len(active)) {
+      main <- 1L + (j - 1L) %% q[g]
+
+      rest <- setdiff(seq_len(q[g]), main)
+      rest <- rest[sample.int(length(rest))]
+      order <- c(main, rest)
+
+      left <- loadings[g]^2
+      share <- numeric(q[g])
+
+      if (q[g] == 1L) {
+        share[main] <- left
+      } else {
+        for (k in seq_len(q[g] - 1L)) {
+          part <- sample(60:70, 1) / 100
+          share[order[k]] <- left * part
+          left <- left - share[order[k]]
+        }
+
+        share[order[q[g]]] <- left
+      }
+
+      A[j, ] <- sqrt(share)
+
+      if (q[g] > 1L) {
+        A[j, rest] <- A[j, rest] *
+          sample(c(-1, 1), length(rest), replace = TRUE)
+      }
+    }
+
+    L[seq_len(active), ] <- A
+    eta[[g]] <- matrix(rnorm(n * q[g]), n, q[g])
+    eps[[g]] <- matrix(rnorm(n * p, sd = sqrt(psi)), n, p)
+    Xg[[g]] <- eta[[g]] %*% t(L) + eps[[g]]
+    Lambda[[g]] <- L
+    Sigma[[g]] <- tcrossprod(L) + diag(psi, p)
+    allocation[[g]] <- A^2 / rowSums(A^2)
+  }
+
+  X <- do.call(rbind, Xg)
+  z <- rep(seq_len(G), each = n)
+  ind <- sample.int(G * n)
+  X <- X[ind, , drop = FALSE]
+  z <- z[ind]
+  colnames(X) <- paste0("V", seq_len(p))
+
+  distance <- matrix(0, G, G)
+  for (g in seq_len(G)) {
+    for (h in seq_len(G)) distance[g, h] <- sqrt(sum((Sigma[[g]] - Sigma[[h]])^2))
+  }
+
+  list(
+    X = X, z_true = z, X_cluster = Xg, eta = eta, noise = eps,
+    Lambda = Lambda, Sigma = Sigma, allocation = allocation,
+    gamma_true = matrix(rep(c(rep(1L, active), rep(0L, p - active)), G),
+                        nrow = p, ncol = G),
+    q = q, n = n, p = p, G = G, active = seq_len(active),
+    loadings = loadings, psi = psi, covariance_distance = distance, seed = seed
+  )
+}
+
+run_imifa <- function(sim, n_iter = 5000, burn = 1000, thin = 2) {
+  stopifnot(requireNamespace("IMIFA", quietly = TRUE))
+  stopifnot(requireNamespace("mclust", quietly = TRUE))
+
+  methods <- c("MFA", "MIFA", "IMFA", "IMIFA")
+  fits <- vector("list", 4)
+  results <- vector("list", 4)
+  names(fits) <- names(results) <- methods
+
+  for (method in methods) {
+    if (method == "MFA") {
+      fits[[method]] <- IMIFA::mcmc_IMIFA(
+        sim$X, method = method, range.G = sim$G,
+        range.Q = sort(unique(sim$q)), n.iters = n_iter,
+        burnin = burn, thinning = thin, scaling = "none", uni.type = "isotropic"
+      )
+    }
+    if (method == "MIFA") {
+      fits[[method]] <- IMIFA::mcmc_IMIFA(
+        sim$X, method = method, range.G = sim$G,
+        range.Q = max(sim$q) + 2L, n.iters = n_iter,
+        burnin = burn, thinning = thin, scaling = "none", uni.type = "isotropic"
+      )
+    }
+    if (method == "IMFA") {
+      fits[[method]] <- IMIFA::mcmc_IMIFA(
+        sim$X, method = method, range.G = sim$G + 3L,
+        range.Q = sort(unique(sim$q)), n.iters = n_iter,
+        burnin = burn, thinning = thin, scaling = "none", uni.type = "isotropic"
+      )
+    }
+    if (method == "IMIFA") {
+      fits[[method]] <- IMIFA::mcmc_IMIFA(
+        sim$X, method = method, range.G = sim$G + 3L,
+        range.Q = max(sim$q) + 2L, n.iters = n_iter,
+        burnin = burn, thinning = thin, scaling = "none", uni.type = "isotropic"
+      )
+    }
+
+    results[[method]] <- IMIFA::get_IMIFA_results(
+      fits[[method]], zlabels = sim$z_true, error.metrics = FALSE
+    )
+  }
+
+  comparison <- data.frame(
+    method = methods,
+    G_hat = vapply(results, function(x) length(unique(x$Clust$MAP)), integer(1)),
+    ARI = vapply(results, function(x)
+      mclust::adjustedRandIndex(x$Clust$MAP, sim$z_true), numeric(1))
+  )
+
+  list(fits = fits, results = results, comparison = comparison)
+}
+
+ESS.Gibbs <- function(b.c, LL, id = list(seq_along(b.c)), sd.0 = rep(1, length(b.c)),
+                      N = 1, S.max = 500) {
+  mc.b <- matrix(NA_real_, N, length(b.c))
+  n.s <- matrix(NA_integer_, N, length(id))
+
+  for (i in seq_len(N)) {
+    for (k in seq_along(id)) {
+      slice <- LL(b.c) + log(runif(1))
+      theta <- runif(1, 0, 2 * pi)
+      lower <- theta - 2 * pi
+      upper <- theta
+      nu <- rnorm(length(id[[k]]), sd = sd.0[id[[k]]])
+
+      for (step in seq_len(S.max)) {
+        proposal <- b.c
+        proposal[id[[k]]] <- b.c[id[[k]]] * cos(theta) + nu * sin(theta)
+
+        if (LL(proposal) > slice) {
+          b.c <- proposal
+          break
+        }
+
+        if (theta < 0) lower <- theta else upper <- theta
+        theta <- runif(1, lower, upper)
+      }
+      n.s[i, k] <- step
+    }
+    mc.b[i, ] <- b.c
+  }
+
+  list(mc.b = mc.b, n.s = n.s)
+}
+
+sparse_mfa <- function(X, G, q, mode = c("default", "threshold"),
+                       threshold_scope = c("cluster", "global"),
+                       n_iter = 4000, burn = 2000, thin = 2,
+                       v1 = 4, a_pi = 1, b_pi = 9,
+                       a_psi = 2, b_psi = 1, mu_sd = 3,
+                       t_mean = 1.28, t_sd = 0.5,
+                       z_init = NULL, seed = 200, verbose = TRUE) {
+  mode <- match.arg(mode)
+  threshold_scope <- match.arg(threshold_scope)
+  set.seed(seed)
+
+  X <- as.matrix(X)
+  N <- nrow(X)
+  P <- ncol(X)
+  stopifnot(length(q) == G)
+
+  z <- if (is.null(z_init)) sample(rep(seq_len(G), length.out = N)) else as.integer(z_init)
+  mu <- matrix(0, P, G)
+  psi <- matrix(rep(apply(X, 2, var), G), P, G)
+  Lambda <- lapply(q, function(k) matrix(rnorm(P * k, sd = 0.1), P, k))
+  eta <- lapply(q, function(k) matrix(0, N, k))
+  mix <- rep(1 / G, G)
+
+  if (mode == "default") {
+    gamma <- lapply(q, function(k) matrix(rbinom(P * k, 1, 0.1), P, k))
+    S <- lapply(q, function(k) matrix(rnorm(P * k, sd = sqrt(v1)), P, k))
+    incl <- rep(0.1, G)
+    for (g in seq_len(G)) Lambda[[g]] <- S[[g]] * gamma[[g]]
+  } else {
+    S <- lapply(q, function(k) matrix(rnorm(P * k), P, k))
+    U <- lapply(q, function(k) matrix(rnorm(P * k), P, k))
+    tpar <- rep(0, if (threshold_scope == "cluster") G else 1L)
+    for (g in seq_len(G)) Lambda[[g]] <- S[[g]] * (U[[g]] > t_mean)
+  }
+
+  keep <- seq.int(burn + 1L, n_iter, by = thin)
+  B <- length(keep)
+  z_store <- matrix(0L, B, N)
+  row_store <- array(0, c(P, G, B))
+  element_store <- lapply(q, function(k) array(0, c(P, k, B)))
+  norm_store <- array(0, c(P, G, B))
+  threshold_store <- if (mode == "threshold")
+    matrix(0, B, if (threshold_scope == "cluster") G else 1L) else NULL
+  save <- 0L
+
+  for (iter in seq_len(n_iter)) {
+    logp <- matrix(0, N, G)
+    for (g in seq_len(G)) {
+      Dinv <- 1 / psi[, g]
+      C <- diag(q[g]) + crossprod(Lambda[[g]] * Dinv, Lambda[[g]])
+      R <- chol(C)
+      centered <- sweep(X, 2, mu[, g])
+      XD <- centered * rep(Dinv, each = N)
+      quad <- rowSums(centered * XD) -
+        rowSums((XD %*% Lambda[[g]] %*% chol2inv(R)) * (XD %*% Lambda[[g]]))
+      logdet <- sum(log(psi[, g])) + 2 * sum(log(diag(R)))
+      logp[, g] <- log(mix[g]) - 0.5 * (P * log(2 * pi) + logdet + quad)
+    }
+
+    logp <- exp(logp - apply(logp, 1, max))
+    logp <- logp / rowSums(logp)
+    z <- apply(logp, 1, function(x) sample.int(G, 1, prob = x))
+    mix <- as.numeric(rgamma(G, 1 + tabulate(z, G)))
+    mix <- mix / sum(mix)
+
+    for (g in seq_len(G)) {
+      ind <- which(z == g)
+      ng <- length(ind)
+      if (ng == 0L) next
+
+      C <- diag(q[g]) + crossprod(Lambda[[g]] / psi[, g], Lambda[[g]])
+      R <- chol(C)
+      V <- chol2inv(R)
+      M <- sweep(X[ind, , drop = FALSE], 2, mu[, g]) %*%
+        (Lambda[[g]] / psi[, g]) %*% V
+      eta[[g]][ind, ] <- M + matrix(rnorm(ng * q[g]), ng, q[g]) %*% chol(V)
+
+      for (j in seq_len(P)) {
+        y <- X[ind, j] - mu[j, g]
+        H <- eta[[g]][ind, , drop = FALSE]
+
+        if (mode == "default") {
+          LL <- function(b) {
+            L <- b * gamma[[g]][j, ]
+            -sum((y - H %*% L)^2) / (2 * psi[j, g])
+          }
+          S[[g]][j, ] <- ESS.Gibbs(
+            S[[g]][j, ], LL, sd.0 = rep(sqrt(v1), q[g]), S.max = 200
+          )$mc.b[1, ]
+
+          for (k in seq_len(q[g])) {
+            gate0 <- gamma[[g]][j, ]
+            gate1 <- gamma[[g]][j, ]
+            gate0[k] <- 0L
+            gate1[k] <- 1L
+            log0 <- log1p(-incl[g]) -
+              sum((y - H %*% (S[[g]][j, ] * gate0))^2) / (2 * psi[j, g])
+            log1 <- log(incl[g]) -
+              sum((y - H %*% (S[[g]][j, ] * gate1))^2) / (2 * psi[j, g])
+            gamma[[g]][j, k] <- rbinom(1, 1, plogis(log1 - log0))
+          }
+          Lambda[[g]][j, ] <- S[[g]][j, ] * gamma[[g]][j, ]
+        } else {
+          tg <- t_mean + t_sd * tpar[if (threshold_scope == "cluster") g else 1L]
+          LLs <- function(b) {
+            L <- b * (U[[g]][j, ] > tg)
+            -sum((y - H %*% L)^2) / (2 * psi[j, g])
+          }
+          S[[g]][j, ] <- ESS.Gibbs(
+            S[[g]][j, ], LLs, sd.0 = rep(sqrt(v1), q[g]), S.max = 200
+          )$mc.b[1, ]
+
+          LLu <- function(b) {
+            L <- S[[g]][j, ] * (b > tg)
+            -sum((y - H %*% L)^2) / (2 * psi[j, g])
+          }
+          U[[g]][j, ] <- ESS.Gibbs(
+            U[[g]][j, ], LLu, sd.0 = rep(1, q[g]), S.max = 200
+          )$mc.b[1, ]
+          Lambda[[g]][j, ] <- S[[g]][j, ] * (U[[g]][j, ] > tg)
+        }
+      }
+
+      residual <- X[ind, , drop = FALSE] -
+        eta[[g]][ind, , drop = FALSE] %*% t(Lambda[[g]])
+      for (j in seq_len(P)) {
+        precision <- ng / psi[j, g] + 1 / mu_sd^2
+        mean_mu <- sum(residual[, j]) / psi[j, g] / precision
+        mu[j, g] <- rnorm(1, mean_mu, sqrt(1 / precision))
+      }
+      residual <- sweep(X[ind, , drop = FALSE], 2, mu[, g]) -
+        eta[[g]][ind, , drop = FALSE] %*% t(Lambda[[g]])
+      psi[, g] <- 1 / rgamma(P, a_psi + ng / 2,
+                              b_psi + colSums(residual^2) / 2)
+
+      if (mode == "default") {
+        incl[g] <- rbeta(1, a_pi + sum(gamma[[g]]),
+                         b_pi + P * q[g] - sum(gamma[[g]]))
+      }
+    }
+
+    if (mode == "threshold") {
+      for (h in seq_along(tpar)) {
+        groups <- if (threshold_scope == "cluster") h else seq_len(G)
+        LLt <- function(b) {
+          tt <- t_mean + t_sd * b
+          out <- 0
+          for (g in groups) {
+            ind <- which(z == g)
+            if (length(ind) == 0L) next
+            L <- S[[g]] * (U[[g]] > tt)
+            R <- sweep(X[ind, , drop = FALSE], 2, mu[, g]) -
+              eta[[g]][ind, , drop = FALSE] %*% t(L)
+            out <- out - sum(sweep(R^2, 2, psi[, g], "/")) / 2
+          }
+          out
+        }
+        tpar[h] <- ESS.Gibbs(tpar[h], LLt, sd.0 = 1, S.max = 300)$mc.b[1, 1]
+      }
+      for (g in seq_len(G)) {
+        tg <- t_mean + t_sd * tpar[if (threshold_scope == "cluster") g else 1L]
+        Lambda[[g]] <- S[[g]] * (U[[g]] > tg)
+      }
+    }
+
+    strength <- vapply(Lambda, function(L) sum(L^2), numeric(1))
+    ord <- seq_len(G)
+    for (k in unique(q)) {
+      same_q <- which(q == k)
+      ord[same_q] <- same_q[order(strength[same_q])]
+    }
+    if (!identical(ord, seq_len(G))) {
+      z <- match(z, ord)
+      mu <- mu[, ord, drop = FALSE]
+      psi <- psi[, ord, drop = FALSE]
+      Lambda <- Lambda[ord]
+      eta <- eta[ord]
+      mix <- mix[ord]
+      if (mode == "default") {
+        gamma <- gamma[ord]
+        S <- S[ord]
+        incl <- incl[ord]
+      } else {
+        S <- S[ord]
+        U <- U[ord]
+        if (threshold_scope == "cluster") tpar <- tpar[ord]
+      }
+    }
+
+    if (iter %in% keep) {
+      save <- save + 1L
+      z_store[save, ] <- z
+      for (g in seq_len(G)) {
+        gate <- if (mode == "default") gamma[[g]] else {
+          tg <- t_mean + t_sd * tpar[if (threshold_scope == "cluster") g else 1L]
+          U[[g]] > tg
+        }
+        element_store[[g]][, , save] <- gate
+        row_store[, g, save] <- apply(gate, 1, any)
+        norm_store[, g, save] <- sqrt(rowSums(Lambda[[g]]^2))
+      }
+      if (mode == "threshold") threshold_store[save, ] <-
+        t_mean + t_sd * tpar
+    }
+
+    if (verbose && iter %% 100 == 0L) {
+      cat("iteration", iter, "cluster sizes", tabulate(z, G), "\n")
+    }
+  }
+
+  row_pip <- apply(row_store, c(1, 2), mean)
+  element_pip <- lapply(element_store, function(a) apply(a, c(1, 2), mean))
+  row_norm <- apply(norm_store, c(1, 2), mean)
+
+  list(
+    mode = mode, threshold_scope = if (mode == "threshold") threshold_scope else NULL,
+    row_pip = row_pip, element_pip = element_pip, row_norm = row_norm,
+    selected = row_pip >= 0.5, z_store = z_store,
+    z_hat = apply(z_store, 2, function(x) as.integer(names(which.max(table(x))))),
+    threshold = threshold_store, Lambda = Lambda, psi = psi, mu = mu,
+    q = q, G = G, burn = burn, thin = thin, seed = seed
+  )
+}
+
+selection_summary <- function(fit, truth, z_true = NULL) {
+  G <- ncol(truth)
+  out <- vector("list", G)
+
+  for (g in seq_len(G)) {
+    selected <- fit$row_pip[, g] >= 0.5
+    actual <- truth[, g] == 1L
+    TP <- sum(selected & actual)
+    FP <- sum(selected & !actual)
+    FN <- sum(!selected & actual)
+    out[[g]] <- data.frame(
+      cluster = g, selected = sum(selected), TP = TP, FP = FP, FN = FN,
+      precision = ifelse(TP + FP == 0, 0, TP / (TP + FP)),
+      recall = TP / (TP + FN),
+      F1 = ifelse(2 * TP + FP + FN == 0, 0, 2 * TP / (2 * TP + FP + FN))
+    )
+  }
+
+  ans <- do.call(rbind, out)
+  if (!is.null(z_true) && requireNamespace("mclust", quietly = TRUE)) {
+    attr(ans, "ARI") <- mclust::adjustedRandIndex(fit$z_hat, z_true)
+  }
+  ans
+}
