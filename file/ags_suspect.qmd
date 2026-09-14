@@ -1,0 +1,963 @@
+---
+title: "Extension: Group-Row Neuronization, MGP Shrinkage, and Adaptive Factor Dimension"
+author: "Haoyu Ji"
+lang: en
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-tools: true
+    self-contained: true
+---
+
+# Scope of This Extension
+
+This section begins with the neuronized finite mixture of factor analyzers developed in the preceding document. It does not repeat the standard MFA likelihood or the elementwise construction. Instead, it introduces three additions:
+
+1. a single neuronized gate shared by an entire loading row, giving exact cluster-specific row selection;
+2. a multiplicative gamma process (MGP) prior on the vector-valued slab, together with the resulting MCMC updates and adaptive Gibbs sampler (AGS);
+3. offline relabeling of mixture components, while distinguishing mixture label switching from factor-column non-identifiability.
+
+The construction below uses only the scalar neuronized representation as its point of departure.
+
+# From a Scalar Neuronized Coefficient to a Loading-Row Slab
+
+The scalar neuronized representation of Shin and Liu is
+
+$$
+\theta = T(\alpha-\alpha_0)w,
+$$
+
+where $\alpha$ is an activation variable, $\alpha_0$ is a threshold, and $w\in\mathbb R$ is a scalar slab variable. The required extension is immediate once the scalar slab is allowed to be a vector.
+
+For variable $j$ in cluster $g$, define
+
+$$
+\widetilde\lambda_{jg}
+=
+(\widetilde\lambda_{j1g},\ldots,\widetilde\lambda_{j q_g g})^\top
+\in\mathbb R^{q_g},
+$$
+
+and let the entire vector share one scalar activation:
+
+$$
+a_{jg}=A(\alpha_{jg},\alpha_0).
+$$
+
+The loading row is then
+
+$$
+\boxed{
+\lambda_{jg}=a_{jg}\widetilde\lambda_{jg}
+}
+$$
+
+or, element by element,
+
+$$
+\boxed{
+\lambda_{jkg}=A(\alpha_{jg},\alpha_0)\widetilde\lambda_{jkg}.
+}
+$$
+
+The two gates retained in the model are
+
+$$
+A(\alpha_{jg},\alpha_0)
+=
+\mathbb I(\alpha_{jg}>\alpha_0)
+$$
+
+and
+
+$$
+A(\alpha_{jg},\alpha_0)
+=
+(\alpha_{jg}-\alpha_0)_+.
+$$
+
+The indicator gate separates selection from slab magnitude. The ReLU gate uses the same support event but additionally scales an active row by the threshold exceedance. In both cases,
+
+$$
+\lambda_{jg}=0
+\quad\Longleftrightarrow\quad
+\alpha_{jg}\leq\alpha_0.
+$$
+
+Thus, one latent activation variable determines whether variable $j$ participates in any common factor of cluster $g$. This is exact row sparsity rather than the event that at least one independently gated loading happens to be nonzero.
+
+Let
+
+$$
+D_g=\operatorname{Diag}(a_{1g},\ldots,a_{pg}),
+$$
+
+and let $\widetilde\Lambda_g$ collect the slab rows. Then
+
+$$
+\boxed{
+\Lambda_g=D_g\widetilde\Lambda_g.
+}
+$$
+
+The observation model remains
+
+$$
+x_i\mid z_i=g,\eta_i
+\sim
+\mathcal N_p(\mu_g+\Lambda_g\eta_i,\Psi_g),
+$$
+
+with
+
+$$
+\eta_i\mid z_i=g\sim\mathcal N_{q_g}(0,I_{q_g}),
+\qquad
+\Psi_g=\operatorname{Diag}(\psi_{1g},\ldots,\psi_{pg}).
+$$
+
+After integrating out $\eta_i$,
+
+$$
+x_i\mid z_i=g
+\sim
+\mathcal N_p(\mu_g,\Sigma_g),
+\qquad
+\Sigma_g=D_g\widetilde\Lambda_g\widetilde\Lambda_g^\top D_g+\Psi_g.
+$$
+
+If row $j$ is inactive, it contributes no shared covariance in cluster $g$:
+
+$$
+(\Sigma_g)_{j\ell}=0,
+\qquad \ell\neq j.
+$$
+
+It nevertheless retains its cluster-specific mean $\mu_{jg}$ and uniqueness $\psi_{jg}$. Hence an inactive row is not declared globally irrelevant and is not removed from the clustering likelihood. The selection statement is specifically that the variable is not represented through the shared low-rank covariance of that cluster.
+
+# Row Inclusion Probabilities
+
+Because the support event is shared by all $q_g$ entries of a row, its posterior inclusion probability is
+
+$$
+\operatorname{rowPIP}_{jg}
+=
+P(\alpha_{jg}>\alpha_0\mid X).
+$$
+
+For retained draws $b=1,\ldots,B$,
+
+$$
+\widehat{\operatorname{rowPIP}}_{jg}
+=
+\frac{1}{B}
+\sum_{b=1}^B
+\mathbb I\!\left(\alpha_{jg}^{(b)}>\alpha_0^{(b)}\right).
+$$
+
+A median-probability decision selects the row when
+
+$$
+\widehat{\operatorname{rowPIP}}_{jg}\geq 0.5.
+$$
+
+Unlike the earlier elementwise construction, the prior row-inclusion probability does not increase mechanically with $q_g$. If $\alpha_{jg}\sim\mathcal N(0,1)$ and $\alpha_0$ is fixed, then
+
+$$
+P(\lambda_{jg}\neq0\mid\alpha_0)
+=
+P(\alpha_{jg}>\alpha_0)
+=
+\Phi(-\alpha_0),
+$$
+
+for every $q_g$.
+
+# MGP Prior on the Vector-Valued Slab
+
+The slab is not assigned an exchangeable $\mathcal N(0,vI)$ prior. It inherits the cluster-specific MGP hierarchy of MIFA:
+
+$$
+\boxed{
+\widetilde\lambda_{jkg}mid
+\phi_{jkg},\tau_{kg},\sigma_g
+\sim
+\mathcal N\!\left(
+0,
+(\phi_{jkg}\tau_{kg}\sigma_g)^{-1}
+\right).
+}
+$$
+
+Using the shape-rate parameterization of the gamma distribution,
+
+$$
+\phi_{jkg}\sim\operatorname{Ga}(\nu_1,\nu_2),
+$$
+
+$$
+\tau_{kg}=\prod_{h=1}^k\delta_{hg},
+$$
+
+$$
+\delta_{1g}\sim\operatorname{Ga}(\alpha_1,\beta_1),
+\qquad
+\delta_{hg}\sim\operatorname{Ga}(\alpha_2,\beta_2),
+\quad h\geq2,
+$$
+
+and
+
+$$
+\sigma_g\sim\operatorname{Ga}(\rho_1,\rho_2).
+$$
+
+The resulting precision can be decomposed as
+
+$$
+\boxed{
+\kappa_{jkg}
+=
+\phi_{jkg}\sigma_g\tau_{kg}
+=
+\phi_{jkg}
+\underbrace{\sigma_g\delta_{1g}}_{\text{cluster-wide baseline}}
+\underbrace{\prod_{h=2}^k\delta_{hg}}_{\text{ordered column shrinkage}}.
+}
+$$
+
+The roles of the three levels are therefore distinct:
+
+- $\phi_{jkg}$ provides local element-specific adaptation inside the slab;
+- $\tau_{kg}$ orders columns stochastically and increasingly penalizes later factors;
+- $\sigma_g$ allows the overall loading scale to differ across clusters.
+
+MGP shrinkage is continuous. It can make a slab entry arbitrarily small, but exact row zeros still come exclusively from the shared neuronized gate.
+
+# Complete Hierarchical Extension
+
+The new loading part of the model is summarized by
+
+$$
+\boxed{
+\begin{aligned}
+x_i\mid z_i=g,\eta_i
+&\sim
+\mathcal N_p(\mu_g+D_g\widetilde\Lambda_g\eta_i,\Psi_g),\\
+\eta_i\mid z_i=g
+&\sim
+\mathcal N_{q_g}(0,I_{q_g}),\\
+D_g
+&=
+\operatorname{Diag}\{A(\alpha_{1g},\alpha_0),\ldots,
+A(\alpha_{pg},\alpha_0)\},\\
+\alpha_{jg}
+&\sim
+\mathcal N(0,1),\\
+\widetilde\lambda_{jkg}\mid\phi_{jkg},\tau_{kg},\sigma_g
+&\sim
+\mathcal N\!\left(0,(\phi_{jkg}\tau_{kg}\sigma_g)^{-1}\right),\\
+\phi_{jkg}
+&\sim
+\operatorname{Ga}(\nu_1,\nu_2),\\
+\tau_{kg}
+&=
+\prod_{h=1}^k\delta_{hg},\\
+\delta_{1g}
+&\sim
+\operatorname{Ga}(\alpha_1,\beta_1),\\
+\delta_{hg}
+&\sim
+\operatorname{Ga}(\alpha_2,\beta_2),\qquad h\geq2,\\
+\sigma_g
+&\sim
+\operatorname{Ga}(\rho_1,\rho_2).
+\end{aligned}
+}
+$$
+
+The indicator and ReLU models differ only through $A(\alpha_{jg},\alpha_0)$; all MGP updates are otherwise common to both.
+
+# MCMC Updates After Introducing MGP
+
+Let
+
+$$
+\mathcal I_g=\{i:z_i=g\},
+\qquad
+n_g=|\mathcal I_g|,
+$$
+
+and collect the factor scores in
+
+$$
+E_g=(\eta_i^\top:i\in\mathcal I_g)^\top
+\in\mathbb R^{n_g\times q_g}.
+$$
+
+For variable $j$, define
+
+$$
+y_{jg}=X_{\mathcal I_g,j}-\mu_{jg}\mathbf 1_{n_g}.
+$$
+
+All gamma full conditionals below use the shape-rate convention.
+
+## Updating the Allocations
+
+Integrating out the factor score gives
+
+$$
+P(z_i=g\mid-)
+\propto
+\pi_g\mathcal N_p(x_i;\mu_g,\Sigma_g),
+$$
+
+where
+
+$$
+\Sigma_g=\Lambda_g\Lambda_g^\top+\Psi_g.
+$$
+
+For stable computation, define
+
+$$
+C_g=I_{q_g}+\Lambda_g^\top\Psi_g^{-1}\Lambda_g.
+$$
+
+Then
+
+$$
+\log|\Sigma_g|
+=
+\log|\Psi_g|+\log|C_g|,
+$$
+
+and
+
+$$
+\Sigma_g^{-1}
+=
+\Psi_g^{-1}
+-
+\Psi_g^{-1}\Lambda_g
+C_g^{-1}
+\Lambda_g^\top\Psi_g^{-1}.
+$$
+
+Thus the allocation step requires only $q_g\times q_g$ matrix inversions.
+
+## Updating the Mixing Weights
+
+If
+
+$$
+\pi\sim\operatorname{Dirichlet}(d_1,\ldots,d_G),
+$$
+
+then
+
+$$
+\boxed{
+\pi\mid z
+\sim
+\operatorname{Dirichlet}(d_1+n_1,\ldots,d_G+n_G).
+}
+$$
+
+When equal mixing weights are imposed, this step is omitted and $\pi_g=1/G$.
+
+## Updating the Factor Scores
+
+For $i\in\mathcal I_g$, let
+
+$$
+V_{\eta,g}
+=
+\left(I_{q_g}+\Lambda_g^\top\Psi_g^{-1}\Lambda_g\right)^{-1},
+$$
+
+$$
+m_{\eta,ig}
+=
+V_{\eta,g}\Lambda_g^\top\Psi_g^{-1}(x_i-\mu_g).
+$$
+
+Then
+
+$$
+\boxed{
+\eta_i\mid-
+\sim
+\mathcal N_{q_g}(m_{\eta,ig},V_{\eta,g}).
+}
+$$
+
+## Updating a Shared Row Activation
+
+Conditional on the current slab row, the log-likelihood contribution of a proposed activation value $b$ is
+
+$$
+\ell_{jg}(b)
+=
+-\frac{1}{2\psi_{jg}}
+\left\|
+y_{jg}
+-
+A(b,\alpha_0)E_g\widetilde\lambda_{jg}
+\right\|^2.
+$$
+
+Since
+
+$$
+\alpha_{jg}\sim\mathcal N(0,1),
+$$
+
+$\alpha_{jg}$ is updated by elliptical slice sampling (ESS) using $\ell_{jg}$ as the likelihood term. ESS is applicable to both gates: it does not require derivatives, so the discontinuity of the indicator gate causes no change to the target distribution.
+
+For a current value $\alpha_{jg}^{\mathrm{old}}$, ESS draws
+
+$$
+\nu\sim\mathcal N(0,1)
+$$
+
+and proposes
+
+$$
+\alpha_{jg}(\vartheta)
+=
+\alpha_{jg}^{\mathrm{old}}\cos\vartheta
++
+\nu\sin\vartheta
+$$
+
+until the slice condition is satisfied.
+
+## Updating the MGP Slab Row
+
+Write
+
+$$
+a_{jg}=A(\alpha_{jg},\alpha_0)
+$$
+
+and define the prior precision matrix
+
+$$
+P_{jg}
+=
+\sigma_g
+\operatorname{Diag}
+(\phi_{j1g}\tau_{1g},\ldots,\phi_{j q_g g}\tau_{q_g g}).
+$$
+
+The conditional posterior precision and covariance are
+
+$$
+K_{\lambda,jg}
+=
+P_{jg}
++
+\frac{a_{jg}^2}{\psi_{jg}}E_g^\top E_g,
+$$
+
+$$
+V_{\lambda,jg}=K_{\lambda,jg}^{-1},
+$$
+
+and the conditional mean is
+
+$$
+m_{\lambda,jg}
+=
+V_{\lambda,jg}
+\frac{a_{jg}}{\psi_{jg}}
+E_g^\top y_{jg}.
+$$
+
+Therefore,
+
+$$
+\boxed{
+\widetilde\lambda_{jg}\mid-
+\sim
+\mathcal N_{q_g}(m_{\lambda,jg},V_{\lambda,jg}).
+}
+$$
+
+The effective loading row is then reconstructed as
+
+$$
+\lambda_{jg}=a_{jg}\widetilde\lambda_{jg}.
+$$
+
+When $a_{jg}=0$, the data do not update $\widetilde\lambda_{jg}$ and its conditional distribution reduces to its MGP prior. This distinction is central to the later AGS diagnosis.
+
+## Updating the Local Precisions
+
+Let $\mathcal R_g$ denote the rows used in the MGP hyperparameter update, and write $m_g=|\mathcal R_g|$. Two choices must be distinguished:
+
+$$
+\mathcal R_g=\{1,\ldots,p\}
+$$
+
+reproduces the ordinary MIFA update, whereas
+
+$$
+\mathcal R_g=\mathcal A_g
+:=
+\{j:\alpha_{jg}>\alpha_0\}
+$$
+
+integrates likelihood-inactive slab rows out of the shrinkage update. The latter is the collapsed diagnostic used for the exact row-gated model.
+
+For $j\in\mathcal R_g$,
+
+$$
+\boxed{
+\phi_{jkg}\mid-
+\sim
+\operatorname{Ga}\!\left(
+\nu_1+\frac{1}{2},
+\nu_2+\frac{1}{2}\sigma_g\tau_{kg}
+\widetilde\lambda_{jkg}^2
+\right).
+}
+$$
+
+For $j\notin\mathcal R_g$ under the collapsed update,
+
+$$
+\phi_{jkg}\mid-\sim\operatorname{Ga}(\nu_1,\nu_2),
+$$
+
+and the inactive slab entries are refreshed from
+
+$$
+\widetilde\lambda_{jkg}\mid-
+\sim
+\mathcal N\!\left(0,(\phi_{jkg}\tau_{kg}\sigma_g)^{-1}\right).
+$$
+
+## Updating the MGP Increments and Column Precisions
+
+For a given $h$, define
+
+$$
+\tau_{kg}^{(-h)}
+=
+\frac{\tau_{kg}}{\delta_{hg}},
+\qquad k\geq h.
+$$
+
+Let
+
+$$
+(a_h,b_h)
+=
+\begin{cases}
+(\alpha_1,\beta_1), & h=1,\\
+(\alpha_2,\beta_2), & h\geq2.
+\end{cases}
+$$
+
+The full conditional is
+
+$$
+\boxed{
+\delta_{hg}\mid-
+\sim
+\operatorname{Ga}\!\left(
+a_h+\frac{m_g(q_g-h+1)}{2},
+b_h+
+\frac{\sigma_g}{2}
+\sum_{k=h}^{q_g}
+\tau_{kg}^{(-h)}
+\sum_{j\in\mathcal R_g}
+\phi_{jkg}\widetilde\lambda_{jkg}^2
+\right).
+}
+$$
+
+After every increment update,
+
+$$
+\tau_{kg}=\prod_{\ell=1}^k\delta_{\ell g}
+$$
+
+is recomputed. In an AGS implementation that permits $q_g=0$ and later re-entry, the first reintroduced column follows the boundary convention used by the sampler; the current IMIFA-aligned implementation uses the $h\geq2$ gamma law for this re-entry step.
+
+## Updating the Cluster Shrinkage
+
+Conditional on the rows in $\mathcal R_g$,
+
+$$
+\boxed{
+\sigma_g\mid-
+\sim
+\operatorname{Ga}\!\left(
+\rho_1+\frac{m_gq_g}{2},
+\rho_2+
+\frac{1}{2}
+\sum_{j\in\mathcal R_g}
+\sum_{k=1}^{q_g}
+\phi_{jkg}\tau_{kg}\widetilde\lambda_{jkg}^2
+\right).
+}
+$$
+
+This update is conjugate, but it is also one source of the scale compensation discussed below.
+
+## Updating the Cluster Means
+
+Let
+
+$$
+u_{ijg}=x_{ij}-\lambda_{jg}^\top\eta_i.
+$$
+
+Under
+
+$$
+\mu_{jg}\sim\mathcal N(m_{0j},s_{\mu j}^2),
+$$
+
+define
+
+$$
+V_{\mu,jg}
+=
+\left(s_{\mu j}^{-2}+n_g\psi_{jg}^{-1}\right)^{-1},
+$$
+
+$$
+m_{\mu,jg}
+=
+V_{\mu,jg}
+\left(
+s_{\mu j}^{-2}m_{0j}
++
+\psi_{jg}^{-1}
+\sum_{i\in\mathcal I_g}u_{ijg}
+\right).
+$$
+
+Then
+
+$$
+\boxed{
+\mu_{jg}\mid-
+\sim
+\mathcal N(m_{\mu,jg},V_{\mu,jg}).
+}
+$$
+
+## Updating the Uniquenesses
+
+Define
+
+$$
+r_{ijg}=x_{ij}-\mu_{jg}-\lambda_{jg}^\top\eta_i.
+$$
+
+Using the inverse-gamma convention
+
+$$
+p(\psi)\propto\psi^{-(a+1)}\exp(-b/\psi),
+$$
+
+if
+
+$$
+\psi_{jg}\sim\operatorname{IG}(a_\psi,b_{\psi j}),
+$$
+
+then
+
+$$
+\boxed{
+\psi_{jg}\mid-
+\sim
+\operatorname{IG}\!\left(
+a_\psi+\frac{n_g}{2},
+b_{\psi j}+\frac{1}{2}
+\sum_{i\in\mathcal I_g}r_{ijg}^2
+\right).
+}
+$$
+
+## Learning the Global Threshold
+
+A convenient implementation parameterizes
+
+$$
+\alpha_0=m_\alpha+s_\alpha\xi_0,
+\qquad
+\xi_0\sim\mathcal N(0,1).
+$$
+
+Conditional on all row activations and slab rows, the likelihood term for a proposed $b$ is
+
+$$
+\ell_0(b)
+=
+-\frac{1}{2}
+\sum_{g=1}^G
+\sum_{j=1}^p
+\frac{1}{\psi_{jg}}
+\left\|
+y_{jg}
+-
+A\{\alpha_{jg},m_\alpha+s_\alpha b\}
+E_g\widetilde\lambda_{jg}
+\right\|^2.
+$$
+
+Because $\xi_0$ has a standard Gaussian prior, it is updated by one-dimensional ESS and the threshold is reconstructed as
+
+$$
+\alpha_0=m_\alpha+s_\alpha\xi_0.
+$$
+
+If $\alpha_0$ is fixed, this step is omitted. If a diagnostic fixes the true support, both the activation and threshold updates are omitted; that diagnostic is a causal control and is not a different prior model.
+
+# Adaptive Gibbs Update of $q_g$
+
+The MGP prior orders shrinkage but does not itself set a finite loading dimension. MIFA therefore uses an adaptive Gibbs sampler to maintain a finite working truncation $q_g$.
+
+After a chosen adaptation start, adaptation occurs at iteration $t$ with probability
+
+$$
+p_t
+=
+\exp\{-b_0-b_1(t-t_{\mathrm{start}})\}.
+$$
+
+Let $\mathcal M_g$ denote the rows monitored by the redundancy rule and define
+
+$$
+r_{kg}(\epsilon)
+=
+\frac{1}{|\mathcal M_g|}
+\sum_{j\in\mathcal M_g}
+\mathbb I\!\left(
+|\widetilde\lambda_{jkg}|<\epsilon
+\right).
+$$
+
+Column $k$ is called redundant when
+
+$$
+r_{kg}(\epsilon)\geq\varsigma.
+$$
+
+At an adaptation event:
+
+1. all columns satisfying the redundancy rule are removed;
+2. the corresponding columns of $\widetilde\Lambda_g$, $\Lambda_g$, $\phi_g$, and $\eta_g$ are removed;
+3. the retained MGP increments are used to reconstruct $\tau_g$;
+4. if no column is redundant and $q_g$ is below its cap, one new column is sampled from the MGP prior;
+5. when $q_g=0$, re-entry is attempted using the sampler's boundary probability.
+
+For an added column, the sampler draws a new increment, constructs the new cumulative precision, draws new local precisions and slab entries from their priors, and appends a standard-normal factor-score column. Consequently, adaptation changes the dimension of
+
+$$
+(\eta_g,\widetilde\Lambda_g,\Lambda_g,\phi_g,\delta_g,\tau_g)
+$$
+
+jointly; it is not a post-processing threshold applied after MCMC.
+
+# MGP Ordering and Mixture Label Switching
+
+Two different identification problems must be separated.
+
+First, MGP gives later factor columns stochastically stronger shrinkage. Factor columns are therefore no longer exchangeable under the prior, which discourages arbitrary column permutations and factor splitting. This is useful for interpreting the ordered factor dimension. It does not eliminate sign changes, and it does not by itself solve mixture-component label switching.
+
+Second, the labels $g=1,\ldots,G$ remain exchangeable whenever the mixture prior is exchangeable. These labels are aligned offline.
+
+For posterior draw $b$, define the co-clustering matrix
+
+$$
+A_{ii'}^{(b)}
+=
+\mathbb I\!\left(z_i^{(b)}=z_{i'}^{(b)}\right),
+$$
+
+and the posterior similarity matrix
+
+$$
+\overline A
+=
+\frac{1}{B}\sum_{b=1}^B A^{(b)}.
+$$
+
+A Dahl reference draw is selected by
+
+$$
+b^\star
+=
+\arg\min_b
+\left\|A^{(b)}-\overline A\right\|_F^2,
+$$
+
+with reference allocation
+
+$$
+z^\star=z^{(b^\star)}.
+$$
+
+For each retained draw, form the contingency matrix
+
+$$
+C_{gh}^{(b)}
+=
+\sum_{i=1}^N
+\mathbb I\!\left(z_i^{(b)}=g,z_i^\star=h\right).
+$$
+
+The square assignment problem finds
+
+$$
+\boxed{
+\pi_b^\star
+=
+\arg\max_{\pi_b\in\mathcal S_G}
+\sum_{g=1}^G C_{g,\pi_b(g)}^{(b)}.
+}
+$$
+
+The same permutation must then be applied to every cluster-indexed draw:
+
+$$
+z^{(b)},\quad
+\mu_g^{(b)},\quad
+\Psi_g^{(b)},\quad
+\widetilde\Lambda_g^{(b)},\quad
+\Lambda_g^{(b)},\quad
+\alpha_g^{(b)},\quad
+q_g^{(b)},\quad
+\sigma_g^{(b)},
+$$
+
+and to all stored row-activity and row-norm summaries. Relabeling only $z$ would leave posterior component summaries mismatched.
+
+ARI is invariant to a single permutation of component names. Consequently, relabeling is required for meaningful cluster-specific posterior summaries, but it cannot convert genuinely incorrect memberships into a high ARI.
+
+# One Complete Iteration of the Working Sampler
+
+One iteration proceeds as follows:
+
+1. Update $z_i$ using the marginal component covariance $\Sigma_g$.
+2. Update $\pi$, unless equal mixing weights are fixed.
+3. For each nonempty cluster, update the factor scores $\eta_i$.
+4. For each variable and cluster, update the shared row activation $\alpha_{jg}$ by ESS.
+5. Update the vector slab row $\widetilde\lambda_{jg}$ from its multivariate Gaussian conditional and reconstruct $\lambda_{jg}$.
+6. Update $\phi_{jkg}$, $\delta_{hg}$, $\tau_{kg}$, and $\sigma_g$.
+7. Refresh inactive slab rows from the prior when the collapsed active-row MGP update is used.
+8. Update $\mu_g$ and $\Psi_g$.
+9. Update $\alpha_0$ by ESS when threshold learning is enabled, and reconstruct every $\Lambda_g$.
+10. Perform an AGS birth-or-death step with probability $p_t$ after adaptation begins.
+11. Store allocations, row activity, row norms, $q_g$, and shrinkage summaries.
+12. After sampling, relabel all retained cluster-indexed draws using the Dahl reference and square assignment solution.
+
+# Why MGP-AGS Does Not Compress Enough in the Grouped Model
+
+The experiments indicate that the conditional MGP updates themselves are algebraically correct. The failure occurs in the interaction between exact row gating, continuous MGP shrinkage, and the AGS deletion rule.
+
+## The Original Redundancy Rule Is Not Invariant to Exact Row Gating
+
+Ordinary MIFA monitors entries of a continuous loading matrix. After an exact row gate is introduced, no monitored matrix reproduces that setting exactly:
+
+- monitoring the effective $\Lambda_g$ over all $p$ rows counts structural row zeros as evidence that every factor column is redundant;
+- monitoring only active rows avoids those structural zeros, but with five active rows a rule such as $\varsigma=0.7$ requires at least four of five entries to fall below $\epsilon$;
+- monitoring the full slab over all rows includes inactive slab entries that are not identified by the likelihood and continue to fluctuate under their prior.
+
+The AGS rule therefore changes meaning after group row sparsity is introduced.
+
+## SVD Rank and Entrywise Column Redundancy Measure Different Objects
+
+SVD can show that $\Lambda_g$ has only a few important singular directions even when no individual loading column contains enough near-zero entries to pass the AGS rule. Several nonzero columns can share the same low-rank covariance signal through factor splitting or rotation.
+
+Thus,
+
+$$
+\text{small trailing singular values}
+\not\Rightarrow
+r_{kg}(\epsilon)\geq\varsigma
+\text{ for a particular column }k.
+$$
+
+SVD diagnoses effective rank, whereas the Bhattacharya-Dunson deletion rule diagnoses coordinatewise near-zero columns. Their disagreement is expected rather than contradictory.
+
+## Cluster-Wide Baseline Compensation Weakens Later-Column Shrinkage
+
+The effective slab precision is
+
+$$
+\kappa_{jkg}
+=
+\phi_{jkg}\sigma_g\delta_{1g}
+\prod_{h=2}^k\delta_{hg}.
+$$
+
+The experiments show that the later increments $\delta_{hg}$, $h\geq2$, can increase as intended while $\sigma_g$ and especially $\delta_{1g}$ decrease. Since both are shared by every column in cluster $g$, they lower the baseline from which cumulative shrinkage begins.
+
+In the diagnostic run, the first-column baseline precisions
+
+$$
+\sigma_g\delta_{1g}
+$$
+
+were approximately
+
+$$
+1.089,\qquad0.021,\qquad0.006
+$$
+
+for the three clusters. Local means of $\phi_{jkg}$ remained of order one, so local shrinkage was not the main compensating layer. The evidence therefore points to the duplicated cluster-wide scaling supplied by both $\sigma_g$ and $\delta_{1g}$.
+
+For a strong-signal cluster, this compensation leaves even late-column prior standard deviations large. Those slab entries then have no reason to concentrate inside $[-\epsilon,\epsilon]$, and the AGS death rule is rarely triggered even when SVD indicates a much smaller effective rank.
+
+This decomposition identifies a concrete mechanism, but separating the individual causal contributions of $\sigma_g$ and $\delta_{1g}$ still requires the corresponding fixed-versus-learned factorial experiment.
+
+## Changing $\epsilon$ Changes the Entire Markov Chain
+
+The redundancy threshold is part of the transition mechanism:
+
+$$
+\epsilon
+\longrightarrow
+q_g
+\longrightarrow
+(\eta_g,\widetilde\Lambda_g,\phi_g,\delta_g,\tau_g)
+\longrightarrow
+\text{later redundancy decisions}.
+$$
+
+Post hoc evaluation of several $\epsilon$ values on one fitted loading matrix is only a counterfactual classification of that state. It cannot predict the posterior obtained by rerunning the sampler with a different $\epsilon$, because the chains diverge as soon as their first birth-or-death decision differs.
+
+## Consequence for Clustering
+
+Overestimating $q_g$ gives each component an unnecessarily flexible covariance model and can reduce allocation separation. Fixed-$q_g$ comparisons confirm that this contributes to lower ARI. However, fixing $q_g$ alone does not fully restore clustering, so AGS overestimation should be treated as one contributor rather than the sole explanation of allocation error.
+
+# Methodological Status
+
+The three additions do not currently have the same empirical status:
+
+- the shared neuronized row gate gives exact, well-separated row selection and is retained;
+- MGP provides the required local and ordered-column slab hierarchy, but its current AGS truncation rule is not yet reliable after exact row gating;
+- MGP stabilizes the ordering of factor columns, while mixture label switching is successfully handled by offline Dahl-reference relabeling and square assignment.
+
+The principal AGS issue is therefore not a missing gamma update. It is a mismatch between an entrywise deletion criterion and the grouped loading geometry, amplified by duplicated baseline scale adaptation through $\sigma_g\delta_{1g}$.
+
+# References
+
+- Bhattacharya, A., and Dunson, D. B. (2011). Sparse Bayesian infinite factor models. *Biometrika*, 98(2), 291--306.
+- Carpaneto, G., and Toth, P. (1980). Algorithm 548: Solution of the assignment problem. *ACM Transactions on Mathematical Software*, 6(1), 104--111.
+- Dahl, D. B. (2006). Model-based clustering for expression data via a Dirichlet process mixture model. In *Bayesian Inference for Gene Expression and Proteomics*, 201--218.
+- Murphy, K., Viroli, C., and Gormley, I. C. (2020). [Infinite Mixtures of Infinite Factor Analysers](https://doi.org/10.1214/19-BA1179). *Bayesian Analysis*, 15(3), 937--963.
+- Murray, I., Adams, R. P., and MacKay, D. J. C. (2010). [Elliptical Slice Sampling](https://proceedings.mlr.press/v9/murray10a.html).
+- Shin, M., and Liu, J. S. (2022). [Neuronized Priors for Bayesian Sparse Linear Regression](https://doi.org/10.1080/01621459.2021.1876710). *Journal of the American Statistical Association*, 117(540), 1695--1710.

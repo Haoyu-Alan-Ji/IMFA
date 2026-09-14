@@ -1,0 +1,561 @@
+---
+title: "Nested Cross-Validation Plan for Oncotype DX RS >37 Prediction"
+subtitle: "5-fold outer × 4-fold inner validation design"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    code-copy: true
+    code-overflow: wrap
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: source
+---
+
+## 1. Objective
+
+The purpose of this analysis is to strengthen the internal validation of the current prediction workflow after the exploratory identification of **RS >37** as the high-score endpoint.
+
+The nested cross-validation (CV) analysis is not intended to search for a new clinical cutoff. In this first-stage analysis, the endpoint is fixed as:
+
+- **Lower-score group:** RS 0–37
+- **High-score group:** RS >37
+
+The primary goals are to:
+
+1. evaluate the generalization performance of the full model-tuning procedure;
+2. determine whether the preferred tuning region is stable across different training subsets;
+3. compare the primary MLP model with the RF comparator under the same strictly held-out outer test folds;
+4. obtain a unified out-of-fold performance estimate using all patients.
+
+The currently selected RS >37 threshold remains an exploratory, data-derived endpoint. A separate second-stage analysis may later allow the RS cutoff itself to vary inside the inner CV loop to evaluate cutpoint stability.
+
+---
+
+## 2. Overall nested CV structure
+
+The proposed design uses:
+
+- **5-fold outer CV** for unbiased model evaluation;
+- **4-fold inner CV** for model tuning.
+
+The conceptual structure is:
+
+```text
+Full dataset
+│
+├── Outer fold 1
+│   ├── Outer training set
+│   │   └── 4-fold inner CV
+│   │       ├── tune model parameters
+│   │       ├── tune class weight
+│   │       └── select probability threshold
+│   └── Outer test fold
+│       └── evaluate once using the locked inner-selected settings
+│
+├── Outer fold 2
+│   └── repeat the same procedure
+│
+├── Outer fold 3
+│   └── repeat the same procedure
+│
+├── Outer fold 4
+│   └── repeat the same procedure
+│
+└── Outer fold 5
+    └── repeat the same procedure
+```
+
+The key principle is that the **outer test fold must never participate in model tuning, weight selection, threshold selection, or preprocessing decisions**.
+
+---
+
+## 3. Why 5 outer folds and 4 inner folds
+
+The dataset contains approximately 150 patients with RS >37.
+
+With 5 stratified outer folds, each outer test fold should contain roughly 30 high-score cases. This provides a more stable estimate of sensitivity than a 10-fold outer design, where each test fold would contain only about 15 high-score cases.
+
+Within each outer training set, 4-fold inner CV provides a practical balance between:
+
+- retaining enough high-score cases in each inner validation fold;
+- using most patients for inner training;
+- limiting computational burden.
+
+Therefore, the working design is:
+
+```text
+Outer CV: 5 folds
+Inner CV: 4 folds
+```
+
+---
+
+## 4. Fixed endpoint
+
+For the first nested-CV analysis, the endpoint is fixed before any fold is created:
+
+```r
+high_cut <- 37
+```
+
+The binary outcome is then defined as:
+
+```r
+odx_group <- ifelse(odx_score > high_cut, "High", "Low")
+```
+
+This first analysis therefore evaluates:
+
+> Given RS >37 as a fixed endpoint, how well does the complete MLP/RF model-development and tuning procedure generalize to unseen patients?
+
+The nested CV does **not** by itself establish RS 37 as a clinically optimal cutoff. It provides rigorous internal validation of prediction for the already selected exploratory endpoint.
+
+---
+
+## 5. Model roles
+
+### 5.1 MLP
+
+The multilayer perceptron remains the primary deep-learning candidate.
+
+Its role is to evaluate whether nonlinear and higher-order interactions among demographic and clinicopathologic variables improve prediction of RS >37.
+
+The MLP architecture can initially remain fixed at the previously selected structure so that the first nested-CV analysis focuses on the most important tuning component: class imbalance.
+
+The main MLP tuning parameter is:
+
+```text
+High-class oversampling weight
+```
+
+The MLP weight represents the degree to which high-score observations are oversampled during model fitting.
+
+### 5.2 Random forest
+
+Random forest remains the traditional machine-learning comparator.
+
+Its role is to provide:
+
+- a robust non-deep-learning benchmark;
+- an alternative nonlinear model;
+- downstream variable-importance information for clinical interpretation.
+
+RF tuning may include:
+
+```text
+High-class misclassification weight
+mtry
+```
+
+The RF class weight is not numerically equivalent to the MLP oversampling weight. The two models therefore use separate tuning grids, even when the candidate numeric values are similar.
+
+---
+
+## 6. Inner 4-fold CV: tuning stage
+
+For each outer training set, a new stratified 4-fold inner CV is created.
+
+The outer test fold remains completely untouched.
+
+Within the inner CV, each candidate tuning configuration is evaluated using pooled inner out-of-fold predictions.
+
+### MLP inner tuning
+
+For each candidate MLP class weight:
+
+1. train on three inner folds;
+2. predict the remaining inner validation fold;
+3. repeat until all four inner folds have been predicted once;
+4. pool all four inner validation predictions;
+5. calculate AUROC and threshold-based metrics;
+6. select the probability threshold using the pooled inner predictions.
+
+Conceptually:
+
+```text
+MLP candidate weight
+        ↓
+4 inner validation prediction blocks
+        ↓
+pooled inner OOF probabilities
+        ↓
+AUROC + threshold search
+        ↓
+inner-CV performance for this weight
+```
+
+The same process is repeated for all candidate MLP weights.
+
+### RF inner tuning
+
+For RF, the same inner folds are used.
+
+Each RF candidate consists of a combination of:
+
+```text
+RF class weight × mtry
+```
+
+For each combination, pooled inner out-of-fold predictions are generated and evaluated.
+
+---
+
+## 7. Threshold selection
+
+The classification threshold is treated as a tuning parameter.
+
+It must therefore be selected **inside the inner CV**, not from the outer test fold.
+
+The current decision rule can be retained:
+
+1. require accuracy to meet the prespecified minimum;
+2. among eligible thresholds, prioritize sensitivity;
+3. use balanced accuracy and AUROC as secondary criteria.
+
+A simple threshold grid remains sufficient:
+
+```r
+threshold_grid <- seq(0.05, 0.95, by = 0.01)
+```
+
+For each candidate model configuration, the optimal threshold is selected from pooled inner out-of-fold predictions.
+
+Once selected, that threshold is locked before the corresponding outer test fold is evaluated.
+
+---
+
+## 8. Preprocessing within nested CV
+
+All preprocessing steps that can depend on the observed data must be fitted inside the current training fold.
+
+This includes:
+
+- missing-value handling;
+- dummy-variable encoding;
+- removal of zero- or near-zero-variance variables;
+- scaling for MLP;
+- oversampling for MLP.
+
+The correct sequence is:
+
+```text
+Current training fold
+        ↓
+fit preprocessing
+        ↓
+apply the same preprocessing to validation/test fold
+```
+
+The outer test fold must not be combined with training data before preprocessing.
+
+This is particularly important for dummy-variable construction. The previous convenience approach of binding training, validation, and test data before dummy encoding should not be used in strict nested CV.
+
+---
+
+## 9. Selecting the best inner configuration
+
+For each outer fold, the inner CV produces a table similar to:
+
+```text
+model   weight   mtry   threshold   AUROC   accuracy   sensitivity   balanced_accuracy
+MLP     ...      NA     ...         ...     ...        ...           ...
+RF      ...      ...    ...         ...     ...        ...           ...
+```
+
+The model configuration is selected using the prespecified validation criteria.
+
+The same selection logic should be used in every outer fold.
+
+The important output is not only the best inner configuration, but also the stability of selected parameters across folds.
+
+For example:
+
+```text
+Outer fold 1: RF weight 1.20, threshold 0.61
+Outer fold 2: RF weight 1.30, threshold 0.58
+Outer fold 3: RF weight 1.20, threshold 0.63
+Outer fold 4: RF weight 1.23, threshold 0.60
+Outer fold 5: RF weight 1.20, threshold 0.62
+```
+
+A pattern such as this would support the conclusion that the preferred tuning region is stable around a high-class RF weight of approximately 1.2–1.3.
+
+---
+
+## 10. Outer test evaluation
+
+After the best inner configuration is selected for one outer fold:
+
+1. preprocessing is refitted using the complete outer training set;
+2. the selected model is refitted using the complete outer training set;
+3. the selected class weight and model hyperparameters are fixed;
+4. the inner-selected probability threshold is fixed;
+5. the model predicts the untouched outer test fold exactly once.
+
+For each outer test fold, save:
+
+```text
+patient ID
+true class
+predicted probability
+predicted class
+outer fold
+selected model parameters
+selected threshold
+```
+
+The outer test performance is then calculated without further tuning.
+
+---
+
+## 11. Outer-fold results
+
+The first level of nested-CV results is the set of five outer-test evaluations.
+
+A compact table should contain:
+
+```text
+Outer fold
+Model
+Selected weight
+Selected threshold
+AUROC
+Accuracy
+Sensitivity
+Specificity
+PPV
+NPV
+F1
+Balanced accuracy
+```
+
+A simple print statement is sufficient during model development:
+
+```r
+print(outer_metrics)
+```
+
+The five outer-fold results are useful for assessing fold-to-fold variability.
+
+They are not the only final result.
+
+---
+
+## 12. Unified pooled out-of-fold performance
+
+The five outer test folds together contain every patient exactly once.
+
+Therefore, the outer-test predictions can be pooled:
+
+```text
+Outer fold 1 predictions
+Outer fold 2 predictions
+Outer fold 3 predictions
+Outer fold 4 predictions
+Outer fold 5 predictions
+        ↓
+Complete outer out-of-fold prediction set
+```
+
+This produces one strictly out-of-fold prediction for every patient.
+
+The pooled predictions provide the main unified nested-CV estimate of generalization performance.
+
+### AUROC
+
+AUROC can be calculated directly from all pooled outer-test probabilities.
+
+### Threshold-based metrics
+
+Each patient must retain the classification generated using the threshold selected inside that patient's outer fold.
+
+A new threshold must **not** be optimized after pooling all outer predictions.
+
+The pooled predictions are then used to calculate:
+
+```text
+AUROC
+Accuracy
+Sensitivity
+Specificity
+PPV
+NPV
+F1
+Balanced accuracy
+```
+
+This pooled out-of-fold result is the main overall nested-CV performance estimate.
+
+---
+
+## 13. Tuning stability
+
+Nested CV also provides direct evidence regarding tuning stability.
+
+The selected parameters from the five outer folds should be printed and compared.
+
+```r
+print(selected_settings)
+```
+
+Important summaries include:
+
+```text
+median selected weight
+range of selected weights
+median selected probability threshold
+range of selected thresholds
+selected RF mtry values
+```
+
+The purpose is not necessarily to show that every fold selects exactly the same number.
+
+Instead, the goal is to determine whether the selected values fall within a reasonably narrow and reproducible region.
+
+This makes subsequent use of the final tuning configuration more defensible.
+
+---
+
+## 14. Relationship to the previous single-split analysis
+
+The original workflow used one stratified training/validation/test split.
+
+That analysis was useful for model development and identified:
+
+```text
+Endpoint: RS >37
+Final model candidate: RF
+RF high-class weight: approximately 1.23
+Probability threshold: approximately 0.62
+```
+
+Nested CV changes the role of these values.
+
+Rather than assuming that one validation split identified universally optimal settings, nested CV asks whether similar settings are repeatedly selected when the training data change.
+
+Therefore, nested CV evaluates the **tuning procedure**, not merely one final fitted model.
+
+---
+
+## 15. Relationship to the 100-seed experiment
+
+The completed 100-seed experiment and nested CV answer different questions.
+
+### 100-seed repeated split analysis
+
+This evaluates:
+
+> If RS >37, RF, and the selected class weight are already fixed, how sensitive is the observed performance to repeated random train/validation/test splits?
+
+This is primarily a stability or sensitivity analysis.
+
+### Nested CV
+
+This evaluates:
+
+> If tuning is repeated within new training subsets while the outer test patients remain hidden, how well does the full model-development procedure generalize?
+
+The recommended reporting structure is therefore:
+
+```text
+Primary internal validation:
+    Nested cross-validation
+
+Sensitivity analysis:
+    100-seed repeated stratified split experiment
+```
+
+---
+
+## 16. Optional second-stage cutline stability analysis
+
+The first nested-CV analysis should keep RS >37 fixed.
+
+After that workflow has been validated, a second nested analysis may examine the stability of the RS cutline itself.
+
+In that analysis, the inner loop would also evaluate candidate cutlines, for example:
+
+```r
+high_cut_grid <- 30:45
+```
+
+The inner loop would then jointly select:
+
+```text
+RS cutline
+model-specific class weight
+model hyperparameters
+probability threshold
+```
+
+The outer test fold would still remain untouched.
+
+The main purpose would be to record the distribution of selected cutlines, for example:
+
+```text
+How often is 37 selected?
+How often is the selected cutline between 35 and 39?
+What is the median selected cutline?
+How wide is the selected cutline range?
+```
+
+If the selected cutlines cluster around 35–39 rather than always being exactly 37, the appropriate conclusion would be that a stable high-performing region exists around RS 37, rather than that 37 is a uniquely optimal clinical threshold.
+
+---
+
+## 17. Interpretation of the nested-CV result
+
+The nested-CV analysis should support statements about the reliability of the prediction and tuning procedure.
+
+A favorable result would show:
+
+1. pooled outer-test AUROC and sensitivity remain clinically useful;
+2. performance does not collapse in any individual outer fold;
+3. selected class weights remain in a narrow region;
+4. selected probability thresholds remain reasonably stable;
+5. MLP and RF comparisons remain similar across outer folds.
+
+Nested CV does not convert RS >37 into an externally validated clinical cutoff.
+
+The appropriate interpretation remains:
+
+> RS >37 is a data-derived exploratory endpoint, while nested cross-validation provides rigorous internal validation of the prediction procedure developed for this endpoint.
+
+Independent temporal or external validation would still be required to confirm the endpoint and final model in new patients.
+
+---
+
+## 18. Planned outputs
+
+The nested-CV analysis should ultimately produce only a small number of core outputs:
+
+### Outer-fold performance table
+
+```r
+print(outer_metrics)
+```
+
+### Unified pooled out-of-fold performance
+
+```r
+print(pooled_metrics)
+```
+
+### Selected tuning settings by outer fold
+
+```r
+print(selected_settings)
+```
+
+### Compact tuning-stability summary
+
+```r
+print(tuning_summary)
+```
+
+These outputs are sufficient to support the main nested-CV analysis without generating unnecessary intermediate files or large amounts of console output.

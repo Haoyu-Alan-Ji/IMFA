@@ -1,0 +1,691 @@
+---
+title: "Group-ReLU MIFA with Hierarchical MGP Shrinkage and Spectral Factor Recovery"
+author: "Haoyu Ji"
+lang: en
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-tools: true
+    self-contained: true
+execute:
+  enabled: false
+---
+
+# Scope
+
+This document presents the final group-sparse mixture of factor analyzers used in the current study. The model has one formal row-selection mechanism: a shared ReLU gate acting on an entire loading row. It combines this exact row sparsity with a fixed, moderately overcomplete factor truncation, a hierarchical multiplicative gamma process (MGP), a spectral definition of effective factor dimension, and hierarchical uniqueness shrinkage.
+
+The final implementation deliberately excludes adaptive Gibbs birth-and-death updates of the loading dimension. It also excludes a conditional pretraining or frozen-allocation warmup. The allocation variables are updated from the first MCMC iteration, the stored loading dimension remains fixed at \(K\), and the effective cluster-specific factor dimensions are derived from posterior covariance spectra.
+
+# Why the Original AGS Was Replaced
+
+The MIFA model of [Murphy, Viroli, and Gormley (2020)](https://doi.org/10.1214/19-BA1179) uses an adaptive Gibbs sampler (AGS) to maintain a finite computational representation of an infinite-factor model. A loading column is considered redundant when a prespecified proportion of its entries lies in a small neighborhood of zero. Redundant columns are removed; if none is found, a new column may be added from the MGP prior.
+
+That rule is not directly compatible with exact group-row sparsity. If the effective loading matrix is inspected over all \(p\) variables, structural zeros created by the row gate make every column look more redundant. If only active rows are inspected, each cluster may supply very few entries to the decision. With five active rows, for example, a 70% rule becomes a discrete four-of-five decision. Inspecting the un-gated slab is also unsatisfactory because inactive slab rows are not identified by the likelihood and continue to fluctuate under their prior.
+
+The entrywise rule and the inferential target are also different. Several nonzero loading columns can span nearly the same covariance direction, so a loading matrix can have small trailing singular values without any individual coordinate column satisfying an entrywise deletion threshold. Conversely, structural row zeros can satisfy an entrywise rule even when a factor direction is important among the active variables. Thus,
+
+$$
+\text{entrywise column redundancy}
+\neq
+\text{effective covariance rank}.
+$$
+
+Early diagnostics also considered interactions among MGP scale parameters, but these were not retained as the principal explanation of the AGS behavior. The decisive issue is the mismatch between a coordinatewise birth-and-death rule and the geometry created by exact row gating.
+
+The final strategy is therefore:
+
+$$
+\boxed{
+\text{ReLU row gate}
++
+\text{fixed }K
++
+\text{truncated hierarchical MGP}
++
+\text{spectral effective rank}
++
+\text{hierarchical uniqueness}
+}.
+$$
+
+AGS may later be reconsidered as a burn-in-only computational pruning device, but it no longer determines the statistical factor dimension.
+
+# Final Model
+
+## Mixture of factor analyzers
+
+For observation $i=1,\ldots,N$, let $z_i\in\{1,\ldots,G\}$ denote its mixture component. Conditional on $z_i=g$,
+
+$$
+x_i\mid z_i=g,\eta_i
+\sim
+\mathcal N_p(\mu_g+\Lambda_g\eta_i,\Psi_g),
+$$
+
+where
+
+$$
+\eta_i\mid z_i=g\sim\mathcal N_K(0,I_K),
+\qquad
+\Psi_g=\operatorname{Diag}(\psi_{1g},\ldots,\psi_{pg}).
+$$
+
+The stored factor dimension \(K\) is common across clusters and is chosen moderately larger than the anticipated effective dimensions. Integrating out the factor scores gives
+
+$$
+x_i\mid z_i=g
+\sim
+\mathcal N_p(\mu_g,\Sigma_g),
+\qquad
+\Sigma_g=\Lambda_g\Lambda_g^\top+\Psi_g.
+$$
+
+## Shared ReLU row gate
+
+Let $B_g=(b_{jkg})$ denote the $p\times K$ slab matrix. Variable j in cluster g receives one scalar activation variable,
+
+$$
+\alpha_{jg}\sim\mathcal N(0,1),
+$$
+
+and the shared row activation is
+
+$$
+a_{jg}=(\alpha_{jg}-\alpha_0)_+.
+$$
+
+The effective loading row is
+
+$$
+\lambda_{jg}=a_{jg}b_{jg},
+$$
+
+or equivalently,
+
+$$
+\boxed{
+\Lambda_g=D_gB_g,
+\qquad
+D_g=\operatorname{Diag}(a_{1g},\ldots,a_{pg}).
+}
+$$
+
+Because the same activation multiplies all \(K\) entries of a row,
+
+$$
+\alpha_{jg}\leq\alpha_0
+\Longrightarrow
+\lambda_{j1g}=\cdots=\lambda_{jKg}=0.
+$$
+
+The model therefore produces exact cluster-specific row zeros. An inactive variable retains its mean and uniqueness and remains in the component likelihood; it is excluded only from the shared low-rank covariance.
+
+The global threshold is learned through
+
+$$
+\alpha_0=m_\alpha+s_\alpha\xi_0,
+\qquad
+\xi_0\sim\mathcal N(0,1),
+\qquad
+\alpha_{0}\sim\mathcal N(m_\alpha, s_\alpha),
+$$
+
+The row posterior inclusion probability is
+
+$$
+\operatorname{PIP}_{jg} = P(\alpha_{jg}>\alpha_0\mid X),
+\qquad
+\widehat{\operatorname{PIP}}_{jg} = \frac{1}{B} \sum_{b=1}^B \mathbb I(\alpha_{jg}^{(b)}>\alpha_0^{(b)}).
+$$
+
+A row is selected when its posterior inclusion probability is at least 0.5.
+
+## Truncated hierarchical MGP
+
+The slab entries follow
+
+$$
+\boxed{
+b_{jkg}\mid\phi_{jkg},\tau_{kg},\sigma_g,\omega
+\sim
+\mathcal N\!\left[
+0,
+(\omega\phi_{jkg}\tau_{kg}\sigma_g)^{-1}
+\right].
+}
+$$
+
+Using the gamma shape-rate convention,
+
+$$
+\phi_{jkg}\sim\operatorname{Ga}(\nu_1,\nu_2),
+\qquad
+\tau_{kg}=\prod_{h=1}^k\delta_{hg},
+$$
+
+$$
+\delta_{1g}\sim\operatorname{Ga}(\alpha_1,\beta_1),
+$$
+
+and, for $h\geq2$,
+
+$$
+\boxed{
+\delta_{hg}
+\sim
+\operatorname{Ga}(\alpha_2,\beta_2)
+\mathbb I(\delta_{hg}>1).
+}
+$$
+
+The truncation ensures
+
+$$
+\tau_{1g}<\tau_{2g}<\cdots<\tau_{Kg}
+$$
+
+within every realized MCMC state. The remaining shrinkage levels are
+
+$$
+\sigma_g\sim\operatorname{Ga}(\rho_1,\rho_2),
+\qquad
+\omega\sim\operatorname{Ga}(\omega_1,\omega_2).
+$$
+
+Their roles are separated as follows:
+
+- $\phi_{jkg}$ provides local element-specific adaptation;
+- $\tau_{kg}$ imposes increasing within-cluster column shrinkage;
+- $\sigma_g$ adapts the overall loading scale of cluster g;
+- $\omega$ shares information about the overall degree of factor shrinkage across clusters.
+
+Murphy et al. identify difficulty adaptively truncating loading columns in settings with many small clusters and explicitly discuss an additional global MGP shrinkage parameter as a possible extension. Here that global level is included directly.
+
+Let
+
+$$
+\mathcal A_g=\{j:\alpha_{jg}>\alpha_0\},
+\qquad
+m_g=|\mathcal A_g|.
+$$
+
+Only rows in \mathcal A_g enter the sufficient statistics for $\phi_{jkg}$, $\delta_{hg}$, $\sigma_g$, and $\omega$. Inactive slab rows are refreshed from their MGP prior. Consequently, likelihood-inactive prior draws do not act as pseudo-observations in the shrinkage hierarchy.
+
+## Hierarchical uniquenesses
+
+The uniquenesses retain cluster specificity while borrowing information for each variable across clusters:
+
+$$
+\psi_{jg}\mid r_j\sim\operatorname{IG}(a_\psi,r_j),
+\qquad
+r_j\sim\operatorname{Ga}(c_\psi,d_\psi).
+$$
+
+This hierarchy discourages a single component from explaining all active-variable variation through an unconstrained diagonal uniqueness while still permitting genuine cluster differences.
+
+The remaining priors are
+
+$$
+\mu_{jg}\sim\mathcal N(0,s_\mu^2)
+$$
+
+and, when unequal component weights are estimated,
+
+$$
+(\pi_1,\ldots,\pi_G)
+\sim
+\operatorname{Dirichlet}(d,\ldots,d).
+$$
+
+The simulation reported below uses equal weights.
+
+# Spectral Effective Factor Dimension
+
+The stored dimension \(K\) is a computational truncation, not the inferred factor dimension. For each retained posterior draw, define the whitened common covariance
+
+$$
+C_g
+=
+\Psi_g^{-1/2}
+\Lambda_g\Lambda_g^\top
+\Psi_g^{-1/2}.
+$$
+
+Its nonzero eigenvalues are the squared singular values of
+
+$$
+\Psi_g^{-1/2}\Lambda_g.
+$$
+
+Write them as
+
+$$
+d_{1g}\geq d_{2g}\geq\cdots\geq d_{Kg}\geq0.
+$$
+
+First retain only eigenvalues satisfying the absolute signal-to-noise condition
+
+$$
+d_{kg}>d_{\min}.
+$$
+
+If no eigenvalue passes this condition, set \(q_g^{\mathrm{eff}}=0\). Otherwise, \(q_g^{\mathrm{eff}}\) is the smallest \(r\) satisfying
+
+$$
+\frac{\sum_{k=1}^r d_{kg}}
+{\sum_{k:d_{kg}>d_{\min}}d_{kg}}
+\geq c.
+$$
+
+The implementation uses \(d_{\min}=1.5\) and \(c=0.99\). This definition is invariant to factor rotation, is not distorted by structural row zeros, permits a diagonal-covariance component, and measures the factor complexity that actually enters the clustering covariance.
+
+# Posterior Computation
+
+## Allocation update
+
+Allocations are updated from the marginal component likelihood,
+
+$$
+P(z_i=g\mid-)
+\propto
+\pi_g\mathcal N_p(x_i;\mu_g,\Lambda_g\Lambda_g^\top+\Psi_g).
+$$
+
+With
+
+$$
+M_g=I_K+\Lambda_g^\top\Psi_g^{-1}\Lambda_g,
+$$
+
+the Woodbury identity gives
+
+$$
+(\Lambda_g\Lambda_g^\top+\Psi_g)^{-1}
+=
+\Psi_g^{-1}
+-
+\Psi_g^{-1}\Lambda_gM_g^{-1}\Lambda_g^\top\Psi_g^{-1},
+$$
+
+and
+
+$$
+\log|\Lambda_g\Lambda_g^\top+\Psi_g|
+=
+\log|\Psi_g|+\log|M_g|.
+$$
+
+Only \(K\times K\) factorizations are required.
+
+## Factor scores and slab rows
+
+For observations currently allocated to cluster \(g\),
+
+$$
+V_{\eta,g}
+=
+(I_K+\Lambda_g^\top\Psi_g^{-1}\Lambda_g)^{-1},
+$$
+
+$$
+m_{\eta,ig}
+=
+V_{\eta,g}\Lambda_g^\top\Psi_g^{-1}(x_i-\mu_g),
+$$
+
+and
+
+$$
+\eta_i\mid-\sim\mathcal N_K(m_{\eta,ig},V_{\eta,g}).
+$$
+
+Let \(E_g\) collect the current factor scores and let
+
+$$
+y_{jg}=X_{\mathcal I_g,j}-\mu_{jg}\mathbf1.
+$$
+
+Conditional on \(a_{jg}\), the slab-row precision and mean are
+
+$$
+Q_{jg}
+=
+\omega\sigma_g
+\operatorname{Diag}
+(\phi_{j1g}\tau_{1g},\ldots,\phi_{jKg}\tau_{Kg})
++
+\frac{a_{jg}^2}{\psi_{jg}}E_g^\top E_g,
+$$
+
+$$
+m_{jg}
+=
+Q_{jg}^{-1}
+\frac{a_{jg}}{\psi_{jg}}E_g^\top y_{jg},
+$$
+
+so that
+
+$$
+b_{jg}\mid-\sim\mathcal N_K(m_{jg},Q_{jg}^{-1}).
+$$
+
+## ReLU activation and threshold
+
+Conditional on \(b_{jg}\), the likelihood contribution of a proposed activation variable \(u\) is
+
+$$
+\ell_{jg}(u)
+=
+-\frac{1}{2\psi_{jg}}
+\left\|
+y_{jg}-(u-\alpha_0)_+E_gb_{jg}
+\right\|^2.
+$$
+
+Because \(\alpha_{jg}\) has a standard Gaussian prior, it is updated by elliptical slice sampling. The standardized threshold variable \(\xi_0\) is updated by the same method using the likelihood contributions of all rows and clusters.
+
+## Shrinkage updates
+
+For \(j\in\mathcal A_g\),
+
+$$
+\phi_{jkg}\mid-
+\sim
+\operatorname{Ga}\!\left(
+\nu_1+\frac12,
+\nu_2+\frac12\omega\sigma_g\tau_{kg}b_{jkg}^2
+\right).
+$$
+
+For inactive rows, \(\phi_{jkg}\) and \(b_{jkg}\) are redrawn from their prior hierarchy.
+
+For increment \(h\), let
+
+$$
+\tau_{kg}^{(-h)}=\tau_{kg}/\delta_{hg},
+\qquad k\geq h.
+$$
+
+Its conditional gamma shape and rate are
+
+$$
+a_h^\star
+=
+a_h+\frac{m_g(K-h+1)}{2},
+$$
+
+$$
+b_h^\star
+=
+b_h
++
+\frac{\omega\sigma_g}{2}
+\sum_{k=h}^K
+\tau_{kg}^{(-h)}
+\sum_{j\in\mathcal A_g}
+\phi_{jkg}b_{jkg}^2,
+$$
+
+where \((a_h,b_h)=(\alpha_1,\beta_1)\) for \(h=1\) and \((\alpha_2,\beta_2)\) otherwise. The first increment is sampled from the ordinary gamma conditional; every later increment is sampled from that conditional truncated to \((1,\infty)\).
+
+The cluster and global shrinkage updates are
+
+$$
+\sigma_g\mid-
+\sim
+\operatorname{Ga}\!\left(
+\rho_1+\frac{m_gK}{2},
+\rho_2+
+\frac{\omega}{2}
+\sum_{j\in\mathcal A_g}\sum_{k=1}^K
+\phi_{jkg}\tau_{kg}b_{jkg}^2
+\right),
+$$
+
+$$
+\omega\mid-
+\sim
+\operatorname{Ga}\!\left(
+\omega_1+\frac{K}{2}\sum_{g=1}^Gm_g,
+\omega_2+
+\frac12\sum_{g=1}^G\sigma_g
+\sum_{j\in\mathcal A_g}\sum_{k=1}^K
+\phi_{jkg}\tau_{kg}b_{jkg}^2
+\right).
+$$
+
+## Means and uniquenesses
+
+The cluster means have Gaussian full conditionals. For residuals
+
+$$
+r_{ijg}=x_{ij}-\mu_{jg}-\lambda_{jg}^\top\eta_i,
+$$
+
+the uniqueness update is
+
+$$
+\psi_{jg}\mid-
+\sim
+\operatorname{IG}\!\left(
+a_\psi+\frac{n_g}{2},
+r_j+\frac12\sum_{i:z_i=g}r_{ijg}^2
+\right),
+$$
+
+followed by
+
+$$
+r_j\mid-
+\sim
+\operatorname{Ga}\!\left(
+c_\psi+Ga_\psi,
+d_\psi+\sum_{g=1}^G\psi_{jg}^{-1}
+\right).
+$$
+
+## One MCMC sweep
+
+One iteration of the implemented sampler is:
+
+1. update allocations from the collapsed covariance likelihood;
+2. update mixing weights when they are not fixed;
+3. update factor scores within each nonempty cluster;
+4. update each slab row and its shared ReLU activation;
+5. update active-row local precisions, truncated MGP increments, and cluster shrinkage;
+6. refresh inactive slab rows from the prior;
+7. update cluster means and uniquenesses;
+8. update the variable-level uniqueness hyperparameters;
+9. update global shrinkage and the learned global threshold;
+10. reconstruct all effective loading matrices and store posterior diagnostics.
+
+No loading columns are added or removed, and allocations are never frozen. All retained draws therefore arise from the same fixed-dimensional posterior target.
+
+# Mixture Relabeling
+
+MGP orders factor columns but does not identify mixture labels. Let
+
+$$
+A_{ii'}^{(b)}
+=
+\mathbb I(z_i^{(b)}=z_{i'}^{(b)})
+$$
+
+and define the posterior similarity matrix
+
+$$
+\overline A
+=
+\frac1B\sum_{b=1}^B A^{(b)}.
+$$
+
+The retained draw minimizing
+
+$$
+\|A^{(b)}-\overline A\|_F^2
+$$
+
+is used as the Dahl reference partition. Each posterior draw is then aligned to that reference by solving a square linear assignment problem. The same permutation is applied to allocations, row indicators, row norms, effective dimensions, eigenvalues, means, uniquenesses, MGP column shrinkage, cluster shrinkage, and mixing weights.
+
+When simulation truth is supplied, a second reporting-only assignment aligns the Dahl labels to the true cluster labels. RI and ARI are label invariant; this final alignment is used for accuracy, the confusion matrix, and cluster-specific recovery summaries.
+
+# Implementation and Output
+
+All model and MCMC controls are direct arguments of group_sparse_mifa(). There is no separate MCMC or MGP control object.
+
+~~~{r}
+fit <- group_sparse_mifa(
+  X = sim$X,
+  G = sim$G,
+  K = 8,
+  n_iter = 6000,
+  burn = 2000,
+  thin = 2,
+  rank_prop = 0.99,
+  rank_abs = 1.5,
+  z_init = sim$z_true,
+  update_z = TRUE,
+  equal_weights = TRUE,
+  truth = sim,
+  seed = 700,
+  verbose = FALSE
+)
+~~~
+
+For real data, truth is omitted. The returned object still contains the complete posterior summaries; only truth-dependent clustering and selection metrics are unavailable.
+
+The returned object stores:
+
+- data dimensions, initial and estimated cluster sizes, and simulation settings when supplied;
+- RI, ARI, matched accuracy, and the confusion matrix when true labels are supplied;
+- posterior mean, median, and mode of every \(q_g^{\mathrm{eff}}\), together with true dimensions when supplied;
+- selected row counts and indices, true active indices, true positives, false positives, false negatives, precision, recall, specificity, F1, and selection accuracy;
+- full row-PIP, effective-row-norm, posterior-mean uniqueness, and posterior-mean cluster-mean matrices;
+- posterior eigenvalue and MGP-\(\tau\) draws and summaries;
+- posterior summaries and final states of \(\omega\), \(\alpha_0\), and \(\sigma_g\);
+- final loading, covariance, slab, local shrinkage, column shrinkage, uniqueness, mean, mixing-weight, and factor-score states;
+- the PSM, Dahl reference, relabeling maps, and all retained allocation draws;
+- true-versus-fitted active covariance summaries and complete cluster-specific column diagnostics when simulation truth is supplied.
+
+Large matrices are retained in the fitted object and inspected on demand rather than printed automatically.
+
+# Simulation Design
+
+The reported simulation uses \(G=3\) balanced clusters with 50 observations per cluster, giving \(N=150\). The dimension is \(p=60\), and the true cluster-specific factor dimensions are
+
+$$
+q=(2,3,4).
+$$
+
+The first five variables are active in every cluster and the remaining 55 loading rows are zero. Active loading-row norms are
+
+$$
+(2,4,6)
+$$
+
+across the three clusters, and all uniquenesses equal one. Each active row assigns 60%--70% of its squared norm to its primary factor and distributes the remainder across the other factors, with signs randomized outside the primary direction. This construction preserves the requested row norms while ensuring that the true loading matrices have ranks \(2\), \(3\), and \(4\).
+
+The fitted model uses \(K=8\), 6000 MCMC iterations, 2000 discarded iterations, thinning by two, a 0.5 row-PIP decision threshold, \(d_{\min}=1.5\), and a 99% cumulative spectral criterion. The simulation and MCMC seeds are 200 and 700, respectively.
+
+# Results
+
+## Clustering
+
+The estimated cluster sizes were 46, 53, and 51, close to the balanced true sizes of 50, 50, and 50. The matched confusion matrix was
+
+| True cluster | Estimated 1 | Estimated 2 | Estimated 3 |
+|---:|---:|---:|---:|
+| 1 | 39 | 8 | 3 |
+| 2 | 4 | 41 | 5 |
+| 3 | 3 | 4 | 43 |
+
+The diagonal contains 123 of 150 observations, giving matched accuracy 0.8200. The Rand index was 0.7921 and the adjusted Rand index was 0.5295. These values are consistent rather than contradictory: accuracy counts correctly assigned observations after one optimal label match, RI counts agreement over all observation pairs, and ARI subtracts the pair agreement expected by chance. The model therefore recovered a stable three-component partition without component collapse, while ARI records the remaining cross-cluster membership error conservatively.
+
+## Simultaneous row and column recovery
+
+| Cluster | \(E(q_g^{\mathrm{eff}})\) | Median | Mode | True \(q_g\) | F1 | Active PIP | Noise PIP | Active norm | Noise norm | Active \(\psi\) | Noise \(\psi\) | Tail energy |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 2.506 | 2 | 2 | 2 | 1.000 | 1.000 | 0.0875 | 2.12 | 0.0330 | 0.917 | 0.962 | 0.0557 |
+| 2 | 3.131 | 3 | 3 | 3 | 1.000 | 1.000 | 0.0485 | 3.70 | 0.0170 | 0.994 | 1.004 | 0.0103 |
+| 3 | 3.995 | 4 | 4 | 4 | 1.000 | 1.000 | 0.0198 | 6.05 | 0.0048 | 0.996 | 1.019 | 0.0020 |
+
+All five true active rows were selected in all three clusters, with no false positives or false negatives. Thus precision, recall, specificity, selection accuracy, and F1 were all one. The active-row posterior norms closely tracked the simulated row strengths \(2\), \(4\), and \(6\), whereas noise-row norms were near zero.
+
+Column shrinkage worked simultaneously with row selection. Although every fitted loading matrix retained eight stored columns, the posterior median and mode of the effective dimensions were exactly \((2,3,4)\). Tail energy beyond the true factor dimensions decreased from 5.57% in the weakest-signal first cluster to 1.03% and 0.20% in the two stronger clusters. The posterior mean \(q_1^{\mathrm{eff}}=2.506\) expresses residual uncertainty between two and three effective directions rather than a failure to truncate the stored representation.
+
+## Global, cluster, and column shrinkage
+
+The global posterior summaries were
+
+| Quantity | Posterior mean | Final state |
+|---|---:|---:|
+| \(\omega\) | 0.135 | 0.180 |
+| \(\alpha_0\) | 1.031 | 1.034 |
+
+Cluster-level shrinkage was
+
+| Cluster | Posterior mean \(\sigma_g\) | Final \(\sigma_g\) |
+|---:|---:|---:|
+| 1 | 1.393 | 1.283 |
+| 2 | 1.000 | 0.187 |
+| 3 | 0.812 | 0.586 |
+
+The final cumulative MGP precisions increased monotonically:
+
+| Cluster | Final \(\tau_{1g},\ldots,\tau_{8g}\) |
+|---:|:---|
+| 1 | 0.327, 0.950, 4.956, 19.672, 95.490, 402.501, 2066.007, 6719.531 |
+| 2 | 1.156, 4.203, 10.801, 40.554, 73.148, 485.819, 2324.427, 8855.571 |
+| 3 | 0.271, 0.637, 1.490, 3.287, 11.868, 36.164, 93.627, 260.703 |
+
+This monotone growth is a direct consequence of truncating every post-first-column increment above one. It provides increasingly strong continuous regularization of later columns without requiring a birth-or-death decision.
+
+## Spectral and covariance recovery
+
+The posterior mean whitened eigenvalues and their true counterparts were
+
+| Cluster | Fitted eigenvalues | True eigenvalues |
+|---:|:---|:---|
+| 1 | 28.916, 11.379, 1.694, 0.511, 0.134, 0.030, 0.006, 0.001 | 12.025, 7.975 |
+| 2 | 101.854, 20.492, 4.209, 1.035, 0.243, 0.034, 0.005, 0.000 | 55.866, 20.035, 4.099 |
+| 3 | 176.815, 87.816, 47.781, 22.898, 0.647, 0.010, 0.000, 0.000 | 71.174, 51.066, 31.035, 26.725 |
+
+The absolute fitted eigenvalue scale is influenced by the learned ReLU threshold, loading scale, and whitening uniquenesses. The inferential target for column recovery is therefore the separation between leading and trailing directions and the resulting effective rank. Each cluster displays the required leading block followed by a sharp spectral drop, matching the true dimensions under the specified absolute and cumulative criteria.
+
+Active-block covariance summaries were
+
+| Cluster | Mean \(\lvert\text{offdiag}\rvert\), true | Mean \(\lvert\text{offdiag}\rvert\), fitted | Mean diagonal, true | Mean diagonal, fitted |
+|---:|---:|---:|---:|---:|
+| 1 | 1.842 | 3.793 | 5.000 | 6.793 |
+| 2 | 9.717 | 10.094 | 17.000 | 15.341 |
+| 3 | 9.133 | 8.223 | 37.000 | 34.442 |
+
+The second and third clusters closely recovered both diagonal and off-diagonal covariance magnitude. The weakest first cluster showed a larger finite-sample scale difference, but retained the correct row support, effective rank, and clear separation from tail columns. Most importantly, uniquenesses remained centered near the true value one for both active and inactive variables, so the model did not revert to a diagonal-noise explanation of the shared structure.
+
+# Interpretation
+
+This experiment verifies the intended joint behavior of the final model:
+
+1. the ReLU gate creates exact row zeros and perfectly recovers the simulated row support;
+2. active loading-row magnitude remains separated from inactive-row noise;
+3. a fixed \(K=8\) representation contracts to effective dimensions \(2\), \(3\), and \(4\);
+4. hierarchical uniquenesses prevent the factor signal from being absorbed into inflated diagonal noise;
+5. the collapsed covariance likelihood produces a stable three-cluster allocation without component collapse;
+6. Dahl-reference and assignment-based relabeling keep all component-specific posterior summaries aligned.
+
+The result supports the central methodological decision: factor dimension should be inferred from the posterior covariance spectrum, while MGP supplies continuous ordered shrinkage and the ReLU gate supplies exact row selection. AGS is unnecessary for the statistical definition of \(q_g^{\mathrm{eff}}\).
+
+This run establishes internal compatibility of clustering, row selection, column shrinkage, and variance control under the stated simulation. Multi-seed experiments and designs with genuinely cluster-specific row supports remain the appropriate next level of robustness evaluation, rather than further alteration of the validated model structure.
+
+# References
+
+- Bhattacharya, A., and Dunson, D. B. (2011). Sparse Bayesian infinite factor models. *Biometrika*, 98(2), 291--306.
+- Carpaneto, G., and Toth, P. (1980). Algorithm 548: Solution of the assignment problem. *ACM Transactions on Mathematical Software*, 6(1), 104--111.
+- Dahl, D. B. (2006). Model-based clustering for expression data via a Dirichlet process mixture model. In *Bayesian Inference for Gene Expression and Proteomics*, 201--218.
+- Murphy, K., Viroli, C., and Gormley, I. C. (2020). [Infinite Mixtures of Infinite Factor Analysers](https://doi.org/10.1214/19-BA1179). *Bayesian Analysis*, 15(3), 937--963.
+- Murray, I., Adams, R. P., and MacKay, D. J. C. (2010). [Elliptical Slice Sampling](https://proceedings.mlr.press/v9/murray10a.html).
+- Shin, M., and Liu, J. S. (2022). [Neuronized Priors for Bayesian Sparse Linear Regression](https://doi.org/10.1080/01621459.2021.1876710). *Journal of the American Statistical Association*, 117(540), 1695--1710.

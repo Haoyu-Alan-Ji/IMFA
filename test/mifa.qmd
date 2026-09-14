@@ -1,0 +1,242 @@
+---
+title: "how feature selection works"
+author: "Haoyu Ji"
+format: 
+  html:
+    code-tools: true
+    df-print: paged
+    self-contained: true
+    code-fold: true
+    code-summary: "Code"
+execute:
+  echo: true
+  warning: false
+  message: false   
+date: today
+---
+
+```{r setup}
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+library(IMIFA)
+library(tidyverse)
+library(mclust)
+```
+
+
+```{r}
+source(here::here("R", "simfun.R"))
+source(here::here("R", "group_sparse_mifa.R"))
+```
+
+```{r}
+sim <- simfun(
+  n = 50,
+  p = 60,
+  q = c(2, 3, 4),
+  active = 5,
+  loadings = c(2, 4, 6),
+  psi = 1,
+  seed = 200
+)
+
+fit <- group_sparse_mifa(
+  X = sim$X,
+  G = sim$G,
+  K = 8,
+  n_iter = 6000,
+  burn = 2000,
+  thin = 2,
+  rank_prop = 0.99,
+  rank_abs = 1.5,
+  z_init = sim$z_true,
+  update_z = TRUE,
+  equal_weights = TRUE,
+  truth = sim,
+  seed = 700,
+  verbose = FALSE
+)
+```
+
+
+```{r}
+cat("\nData and simulation truth\n")
+print(fit$data_info)
+print(fit$truth_info)
+
+cat("\nClustering\n")
+print(c(
+  RI = fit$clustering$RI,
+  ARI = fit$clustering$ARI,
+  accuracy = fit$clustering$accuracy
+))
+print(fit$clustering$confusion_matrix)
+
+cat("\nCluster-specific effective factor dimension\n")
+print(fit$factor_summary, row.names = FALSE)
+
+cat("\nRow selection and shrinkage recovery\n")
+print(fit$row_summary, row.names = FALSE)
+print(fit$selected_rows)
+print(fit$true_active_rows)
+print(fit$selected_true_rows)
+
+cat("\nGlobal and cluster shrinkage\n")
+print(fit$global_shrinkage$omega, row.names = FALSE)
+print(fit$global_shrinkage$threshold, row.names = FALSE)
+print(fit$global_shrinkage$sigma, row.names = FALSE)
+
+cat("\nCovariance recovery\n")
+print(fit$covariance_summary, row.names = FALSE)
+
+# Detailed posterior objects are retained in fit and viewed only when needed.
+fit$row_pip[1:10, , drop = FALSE]
+fit$row_norm[1:10, , drop = FALSE]
+fit$psi_mean[1:10, , drop = FALSE]
+fit$mu_mean[1:10, , drop = FALSE]
+fit$eigen_mean
+fit$tau_mean
+fit$global_shrinkage$tau_final
+fit$column_diagnostics
+
+```
+
+
+```{r}
+source("R/simfun.R")
+source("R/group_sparse_imifa.R")
+
+test_group_sparse_imifa <- function(
+  n_iter = 6000, burn = 2000, thin = 2,
+  pyp_concentration = 0.5, pyp_discount = 0.1,
+  slice_rho = 0.75, G_max = 40,
+  a_psi = 20, bpsi_shape = 38, bpsi_rate = 2,
+  spectral_init = TRUE,
+  splits_per_cluster = 1L,
+  seed = 700, verbose = FALSE, print_result = TRUE
+) {
+  sim <- simfun(
+    n = 50,
+    p = 60,
+    q = c(2, 3, 4),
+    active = 5,
+    loadings = c(2, 4, 6),
+    psi = 1,
+    seed = 200
+  )
+
+  set.seed(seed + 1L)
+  label <- sim$G * splits_per_cluster
+  if (splits_per_cluster == 1L) {
+    z_init <- sample.int(sim$G)[sim$z_true]
+  } else {
+    z_init <- integer(length(sim$z_true))
+    offset <- 0L
+    for (g in seq_len(sim$G)) {
+      ind <- which(sim$z_true == g)
+      split <- sample(rep(seq_len(splits_per_cluster), length.out = length(ind)))
+      z_init[ind] <- offset + split
+      offset <- offset + splits_per_cluster
+    }
+    z_init <- sample.int(label)[z_init]
+  }
+
+  fit <- group_sparse_imifa(
+    X = sim$X,
+    K = 8,
+    n_iter = n_iter,
+    burn = burn,
+    thin = thin,
+    G_init = label,
+    G_max = G_max,
+    pyp_concentration = pyp_concentration,
+    pyp_discount = pyp_discount,
+    slice_rho = slice_rho,
+    a_psi = a_psi,
+    bpsi_shape = bpsi_shape,
+    bpsi_rate = bpsi_rate,
+    spectral_init = spectral_init,
+    rank_prop = 0.99,
+    rank_abs = 1.5,
+    z_init = z_init,
+    truth = sim,
+    seed = seed,
+    verbose = verbose
+  )
+
+  checks <- c(
+    total_sample_size_is_150 = nrow(sim$X) == 150L,
+    initial_G_is_expected = length(unique(z_init)) == sim$G * splits_per_cluster,
+    initial_sizes_are_balanced = diff(range(tabulate(z_init, label))) <= 1L,
+    posterior_G_mode_is_true = fit$pyp$G_summary$mode == sim$G,
+    dahl_G_is_true = fit$pyp$G_summary$dahl == sim$G,
+    dahl_clusters_are_not_dust = isTRUE(
+      length(fit$clustering$estimated_cluster_sizes) == sim$G &&
+        min(fit$clustering$estimated_cluster_sizes) >= sim$n / 2
+    ),
+    effective_q_is_true = isTRUE(nrow(fit$factor_summary) == sim$G &&
+      all(fit$factor_summary$q_mode == sim$q)),
+    row_F1_is_one = isTRUE(nrow(fit$row_summary) == sim$G &&
+      all(fit$row_summary$F1 == 1)),
+    active_psi_is_controlled = isTRUE(nrow(fit$row_summary) == sim$G &&
+      all(fit$row_summary$active_psi < 1.5)),
+    tau_is_strictly_increasing = isTRUE(all(apply(
+      fit$global_shrinkage$tau_final, 2, function(x) all(diff(x) > 0)
+    ))),
+    pyp_weights_are_valid = all(fit$mix_store >= 0) &&
+      all(rowSums(fit$mix_store) <= 1 + 1e-12) &&
+      all(fit$tail_mass_store >= -1e-12),
+    slice_has_enough_proposals = all(fit$slice_store >= fit$G_store),
+    slice_cap_is_rare = fit$pyp$slice_summary$cap_hit_probability <= 0.01
+  )
+
+  if (print_result) {
+    cat("\nSimulation and initialization\n")
+    print(c(
+      N = nrow(sim$X), P = ncol(sim$X), true_G = sim$G,
+      initial_G = length(unique(z_init)), G_max = G_max,
+      splits_per_cluster = splits_per_cluster
+    ))
+    print(table(initial_cluster = z_init))
+
+    cat("\nPYP cluster-number recovery\n")
+    print(fit$pyp$G_summary, row.names = FALSE)
+    print(fit$pyp$G_distribution, row.names = FALSE)
+
+    cat("\nClustering\n")
+    print(c(
+      RI = fit$clustering$RI,
+      ARI = fit$clustering$ARI,
+      accuracy = fit$clustering$accuracy
+    ))
+    print(fit$clustering$confusion_matrix)
+
+    cat("\nWithin-cluster effective factors\n")
+    print(fit$factor_summary, row.names = FALSE)
+
+    cat("\nWithin-cluster row recovery\n")
+    print(fit$row_summary, row.names = FALSE)
+
+    cat("\nRegression checks\n")
+    print(checks)
+  }
+
+  invisible(list(simulation = sim, z_init = z_init, fit = fit, checks = checks))
+}
+```
+
+
+```{r}
+result <- test_group_sparse_imifa()                       # preserve 3 x 50
+result_overfit <- test_group_sparse_imifa(splits_per_cluster = 3L) # 9 -> 3
+```
+
+
+```{r}
+fit <- result_overfit$fit
+fit$pyp
+fit$global_shrinkage
+fit$row_pip[1:10, , drop = FALSE]
+fit$row_norm[1:10, , drop = FALSE]
+fit$psi_mean[1:10, , drop = FALSE]
+fit$column_diagnostics
+```
